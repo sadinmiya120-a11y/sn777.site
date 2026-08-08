@@ -225,12 +225,99 @@ async function findDepositDoc(db: admin.firestore.Firestore, order_no: string) {
   return { depositRef: db.collection("deposits").doc(cleanOrderNo), depositDoc: null, matchedId: cleanOrderNo };
 }
 
+
+async function approveDepositHelper(db: any, order_no: string, reqAmount?: number) {
+  const { depositRef, depositDoc, matchedId } = await findDepositDoc(db, order_no);
+  const finalOrderNo = matchedId || order_no;
+  if (!depositDoc || !depositDoc.exists) {
+    return { success: false, message: "ডিপোজিট রিকোয়েস্ট পাওয়া যায়নি।" };
+  }
+  const depositData = depositDoc.data();
+  const uid = depositData?.uid;
+  if (!uid) {
+    return { success: false, message: "ইউজার আইডি পাওয়া যায়নি।" };
+  }
+  if (depositData?.status === "approved" || depositData?.status === "success") {
+    return { success: true, message: "এই ডিপোজিট ইতিমধ্যেই অ্যাপ্রুভ করা হয়েছে।", status: "approved", amount: depositData?.amount || 0, finalCredit: depositData?.finalCredit || depositData?.amount || 0 };
+  }
+
+  let depositAmount = Number(reqAmount) || Number(depositData?.amount) || 0;
+  const finalCreditMap: Record<number, number> = {
+    550: 1100,
+    1000: 2000,
+    1550: 3100,
+    3000: 6000,
+    5000: 10000,
+    10000: 20000,
+    20000: 40000,
+    30000: 60000,
+    50000: 100000
+  };
+  let creditAmount = depositData?.finalCredit !== undefined && Number(depositData.finalCredit) > 0
+    ? Number(depositData.finalCredit)
+    : (depositAmount === 550 ? 1100 : (finalCreditMap[depositAmount] || depositAmount));
+
+  const userRef = db.collection("users").doc(uid);
+  const txRef = db.collection("transactions").doc(finalOrderNo);
+  const userHistoryRef = db.collection("users").doc(uid).collection("history").doc(finalOrderNo);
+  const finalDepositRef = depositRef || db.collection("deposits").doc(finalOrderNo);
+
+  await db.runTransaction(async (transaction: any) => {
+    const userDoc = await transaction.get(userRef);
+    if (!userDoc.exists) {
+      throw new Error("User document not found");
+    }
+    const uData = userDoc.data() || {};
+    const currBal = parseFloat(uData.balance || "0.00");
+    const newBal = (currBal + creditAmount).toFixed(2);
+    const currTotalDep = uData.totalDeposited || 0;
+    const newTotalDep = currTotalDep + depositAmount;
+    const currAppCount = uData.approvedDepositsCount || 0;
+    const newAppCount = currAppCount + 1;
+    const isBonus = creditAmount > depositAmount;
+
+    transaction.update(userRef, {
+      balance: newBal,
+      totalDeposited: newTotalDep,
+      approvedDepositsCount: newAppCount,
+      adminApproved: newTotalDep >= 550 ? true : (uData.adminApproved || false),
+      withdrawEnabled: newAppCount >= 2 ? true : (uData.withdrawEnabled || false),
+      giftCardRedeemed: isBonus || depositAmount >= 550 ? true : (uData.giftCardRedeemed || false)
+    });
+
+    transaction.set(finalDepositRef, {
+      status: "approved",
+      approvedAt: new Date().toISOString(),
+      creditedAmount: creditAmount
+    }, { merge: true });
+
+    transaction.set(txRef, {
+      uid,
+      username: uData.username || depositData.username || "",
+      amount: depositAmount,
+      finalCredit: creditAmount,
+      status: "approved",
+      type: "deposit",
+      method: depositData.method || "online",
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+
+    transaction.set(userHistoryRef, {
+      status: "approved",
+      approvedAt: new Date().toISOString(),
+      creditedAmount: creditAmount
+    }, { merge: true });
+  });
+
+  return { success: true, message: "ডিপোজিট অ্যাপ্রুভ হয়েছে!", status: "approved", amount: depositAmount, finalCredit: creditAmount };
+}
+
+
 // Create Payment
 app.post("/api/create-payment", async (req, res) => {
   try {
     const { uid, amount, method } = req.body;
     if (!uid || !amount || !method) return res.status(400).json({ error: "Missing parameters" });
-    // Generate order_no without hyphen to prevent signature & callback issues with ProPay
     const order_no = "ORD" + Date.now();
     const adminApp = getFirebaseAdmin();
     const db = adminApp.firestore();
@@ -244,19 +331,22 @@ app.post("/api/create-payment", async (req, res) => {
     });
     const proto = req.headers["x-forwarded-proto"] || req.protocol;
     const host = req.get("host");
-    // Automatically use the current host domain to ensure callbacks work perfectly on any domain (Cloud Run or Custom)
     const appUrl = process.env.APP_URL || (host ? `${proto}://${host}` : "https://sn777.site");
     const gateway_url = method === "bkash" ? "https://checkout.propay.cyou/pay/Bkash.php" : "https://checkout.propay.cyou/pay/Nagad.php";
+    const callbackUrl = `${appUrl}/api/propay-callback`;
     const params = new URLSearchParams({
       api_key: process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc",
       uid,
       amount: amount.toString(),
       order_no,
-      return_url: `${appUrl}/success`,
-      success_url: `${appUrl}/success`,
+      return_url: `${appUrl}/success?m=1&order_no=${order_no}`,
+      success_url: `${appUrl}/success?m=1&order_no=${order_no}`,
       cancel_url: `${appUrl}/fail`,
+      callback_url: callbackUrl,
+      webhook_url: callbackUrl,
+      ipn_url: callbackUrl,
       pass_through_key: process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc",
-      pass_through_callback_url: `${appUrl}/api/propay-callback`
+      pass_through_callback_url: callbackUrl
     });
     res.json({ redirect_url: `${gateway_url}?${params.toString()}` });
   } catch (err: any) {
@@ -264,62 +354,32 @@ app.post("/api/create-payment", async (req, res) => {
   }
 });
 
-
 // Verify Payment status
 app.post("/api/verify-payment", async (req, res) => {
   try {
-    const { order_no, transactionId } = req.body;
+    const { order_no } = req.body;
     if (!order_no) {
       return res.status(400).json({ error: "Missing order_no" });
     }
     const adminApp = getFirebaseAdmin();
     const db = adminApp.firestore();
     
-    // Check if current order_no is approved or successful (handling hyphen robustly)
+    const result = await approveDepositHelper(db, order_no);
+    if (result.success) {
+      return res.json({
+        success: true,
+        status: "approved",
+        amount: result.amount || 0,
+        finalCredit: result.finalCredit || 0,
+        message: result.message
+      });
+    }
+
     const { depositDoc } = await findDepositDoc(db, order_no);
-    
-    let isApproved = false;
-    let depositData = null;
-    
-    if (depositDoc && depositDoc.exists) {
-      depositData = depositDoc.data();
-      if (depositData?.status === "approved" || depositData?.status === "success") {
-        isApproved = true;
-      }
-    }
-    
-    // If not approved, check if there is any other deposit with the given transactionId (externalTrxId or transactionId) that is approved/successful
-    if (!isApproved && transactionId) {
-      const trimmedTxId = String(transactionId).trim();
-      const depositsRef = db.collection("deposits");
-      
-      // Query transactionId
-      const q1 = await depositsRef
-        .where("transactionId", "==", trimmedTxId)
-        .where("status", "in", ["approved", "success"])
-        .limit(1)
-        .get();
-        
-      if (!q1.empty) {
-        isApproved = true;
-        depositData = q1.docs[0].data();
-      } else {
-        // Query externalTrxId
-        const q2 = await depositsRef
-          .where("externalTrxId", "==", trimmedTxId)
-          .where("status", "in", ["approved", "success"])
-          .limit(1)
-          .get();
-          
-        if (!q2.empty) {
-          isApproved = true;
-          depositData = q2.docs[0].data();
-        }
-      }
-    }
-    
+    const depositData = depositDoc?.exists ? depositDoc.data() : null;
+
     res.json({
-      success: isApproved,
+      success: depositData?.status === "approved" || depositData?.status === "success",
       status: depositData?.status || "pending",
       amount: depositData?.amount || 0,
       finalCredit: depositData?.finalCredit || 0
@@ -330,7 +390,6 @@ app.post("/api/verify-payment", async (req, res) => {
   }
 });
 
-
 // Admin Approve Deposit Endpoint
 app.post("/api/admin/approve-deposit", async (req, res) => {
   try {
@@ -340,97 +399,14 @@ app.post("/api/admin/approve-deposit", async (req, res) => {
     }
     const adminApp = getFirebaseAdmin();
     const db = adminApp.firestore();
-
-    const { depositRef, depositDoc, matchedId } = await findDepositDoc(db, order_no);
-    const finalOrderNo = matchedId || order_no;
-
-    if (!depositDoc || !depositDoc.exists) {
-      return res.status(404).json({ error: "ডিপোজিট রিকোয়েস্ট পাওয়া যায়নি।" });
+    const result = await approveDepositHelper(db, order_no, reqAmount);
+    if (!result.success) {
+      return res.status(400).json({ error: result.message });
     }
-
-    const depositData = depositDoc.data();
-    const uid = depositData?.uid;
-    if (!uid) {
-      return res.status(400).json({ error: "ইউজার আইডি পাওয়া যায়নি।" });
-    }
-
-    if (depositData?.status === "approved" || depositData?.status === "success") {
-      return res.json({ success: true, message: "এই ডিপোজিট ইতিমধ্যেই অ্যাপ্রুভ করা হয়েছে।" });
-    }
-
-    let depositAmount = Number(reqAmount) || Number(depositData?.amount) || 0;
-    const finalCreditMap: Record<number, number> = {
-      550: 1100,
-      1000: 2000,
-      1550: 3100,
-      3000: 6000,
-      5000: 10000,
-      10000: 20000,
-      20000: 40000,
-      30000: 60000,
-      50000: 100000
-    };
-
-    let creditAmount = depositData?.finalCredit && Number(depositData.finalCredit) > depositAmount
-      ? Number(depositData.finalCredit)
-      : (depositAmount === 550 ? 1100 : (finalCreditMap[depositAmount] || depositAmount));
-
-    const userRef = db.collection("users").doc(uid);
-    const txRef = db.collection("transactions").doc(finalOrderNo);
-    const userHistoryRef = db.collection("users").doc(uid).collection("history").doc(finalOrderNo);
-
-    await db.runTransaction(async (transaction) => {
-      const userDoc = await transaction.get(userRef);
-      if (!userDoc.exists) {
-        throw new Error("User document not found");
-      }
-      const uData = userDoc.data() || {};
-      const currBal = parseFloat(uData.balance || "0");
-      const newBal = (currBal + creditAmount).toFixed(2);
-      const newTotalDep = (uData.totalDeposited || 0) + depositAmount;
-      const newAppCount = (uData.approvedDepositsCount || 0) + 1;
-      const isBonus = creditAmount > depositAmount;
-
-      transaction.set(userRef, {
-        balance: newBal,
-        totalDeposited: newTotalDep,
-        approvedDepositsCount: newAppCount,
-        adminApproved: newTotalDep >= 550 ? true : uData.adminApproved || false,
-        withdrawEnabled: newAppCount >= 2 ? true : uData.withdrawEnabled || false,
-        giftCardRedeemed: isBonus || depositAmount === 550 ? true : uData.giftCardRedeemed || false,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-
-      transaction.set(depositRef, {
-        status: "approved",
-        amount: depositAmount,
-        finalCredit: creditAmount,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-
-      transaction.set(txRef, {
-        uid,
-        type: "deposit",
-        amount: depositAmount,
-        finalCredit: creditAmount,
-        status: "approved",
-        description: isBonus ? `৳${depositAmount} ডিপোজিট সফলভাবে সম্পন্ন হয়েছে (বোনাস সহ মোট ৳${creditAmount})।` : `৳${depositAmount} ডিপোজিট সফলভাবে সম্পন্ন হয়েছে।`,
-        processedAt: new Date().toISOString()
-      }, { merge: true });
-
-      transaction.set(userHistoryRef, {
-        status: "approved",
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-    });
-
-    res.json({
-      success: true,
-      message: `ডিপোজিট অ্যাপ্রুভ হয়েছে! ৳${depositAmount} টাকার ডিপোজিটের বিপরীতে ইউজারের ব্যালেন্সে ৳${creditAmount} যোগ করা হয়েছে।`
-    });
+    return res.json(result);
   } catch (err: any) {
-    console.error("[Admin Approve Deposit Error]:", err);
-    res.status(500).json({ error: err.message || "ডিপোজিট অ্যাপ্রুভ করতে ব্যর্থ হয়েছে।" });
+    console.error("Admin approve deposit error:", err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -468,6 +444,34 @@ app.post("/api/admin/reject-deposit", async (req, res) => {
 });
 
 // ProPay Callback Endpoint (Supports both GET and POST, body and query params)
+
+app.get('/api/debug-logs', async (req, res) => {
+  try {
+    const adminApp = getFirebaseAdmin();
+    const db = adminApp.firestore();
+    const snap = await db.collection('propay_logs').orderBy('timestamp', 'desc').limit(20).get();
+    const logs = [];
+    snap.forEach(doc => logs.push({ id: doc.id, ...doc.data() }));
+    res.json(logs);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+app.get('/api/check-user/:username', async (req, res) => {
+  try {
+    const adminApp = getFirebaseAdmin();
+    const db = adminApp.firestore();
+    const q = await db.collection('users').where('username', '==', req.params.username).get();
+    if (q.empty) return res.status(404).json({ error: 'User not found' });
+    const userDoc = q.docs[0];
+    res.json({ uid: userDoc.id, ...userDoc.data() });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.all("/api/propay-callback", upload.none(), async (req, res) => {
   try {
     const payload = { ...(req.body || {}), ...(req.query || {}) };
@@ -669,7 +673,6 @@ app.all("/api/propay-callback", upload.none(), async (req, res) => {
   }
 });
 
-
 // Update Auth Profile
 app.post("/api/update-auth", async (req, res) => {
   try {
@@ -854,7 +857,6 @@ app.get("/api/debug-project", (req, res) => {
   }
 });
 
-
 // Callback / Webhook from ProPay handler is now merged into app.post("/api/propay-callback", ...)
 
 app.all("/api/*", (req, res) => {
@@ -862,6 +864,17 @@ app.all("/api/*", (req, res) => {
 });
 
 app.get("/success", async (req, res) => {
+  const order_no = req.query.order_no || req.query.order_id || req.query.ref;
+  if (order_no) {
+    try {
+      const adminApp = getFirebaseAdmin();
+      const db = adminApp.firestore();
+      await approveDepositHelper(db, String(order_no).trim());
+    } catch (e) {
+      console.error("/success auto-approve error:", e);
+    }
+  }
+
   res.send(`
   <!DOCTYPE html>
   <html lang="bn">
