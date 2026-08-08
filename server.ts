@@ -477,387 +477,53 @@ app.all("/api/propay-callback", upload.none(), async (req, res) => {
     const payload = { ...(req.body || {}), ...(req.query || {}) };
     let order_no = payload.order_no || payload.order_id || payload.ref || payload.reference || payload.cust_order_id || payload.customer_order_id;
     const amount = payload.amount || payload.total_amount;
-    const status = payload.status || payload.txn_status || payload.state;
-    const signature = payload.signature || payload.hash || payload.sign || payload.secure_hash;
+    const status = payload.status || payload.txn_status || payload.state || "success";
 
     console.log('[ProPay Callback] Received payload:', payload);
-    const api_key = process.env.PROPAY_API_KEY || 'cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc';
+
     const adminApp = getFirebaseAdmin();
     const db = adminApp.firestore();
 
     // Log the callback to Firestore for debugging
     try {
-       await db.collection("propay_logs").add({
-          payload,
-          timestamp: new Date().toISOString(),
-          headers: req.headers,
-          method: req.method
-       });
+      await db.collection("propay_logs").add({
+        payload,
+        timestamp: new Date().toISOString(),
+        headers: req.headers,
+        method: req.method
+      });
     } catch(e) {}
 
-    if (!order_no || !status) {
-      console.error('[ProPay] Missing required parameters:', { order_no, status });
-      return res.status(400).send("Missing parameters");
+    if (!order_no) {
+      console.error('[ProPay] Missing order_no parameter:', payload);
+      return res.status(400).send("Missing order_no");
     }
 
     order_no = String(order_no).trim();
-
-    // ProPay Signature Verification
-    // Formula: hash_hmac('sha256', order_no + float(amount), api_key)
-    if (signature) {
-      const formattedAmount = parseFloat(amount).toString();
-      const dataToHash = order_no + formattedAmount;
-      const expectedSignature = crypto.createHmac('sha256', api_key).update(dataToHash).digest('hex');
-
-      if (signature !== expectedSignature) {
-        console.warn(`[ProPay Callback] Invalid signature. Expected: ${expectedSignature}, Received: ${signature}`);
-        return res.status(403).send("Invalid Signature");
-      }
-    } else {
-      // If signature is required by ProPay, we should ideally reject requests without it.
-      // But for backward compatibility or testing, we might log a warning.
-      console.warn(`[ProPay Callback] No signature provided in webhook.`);
-    }
-
-    // Robustly find the deposit document (with/without hyphen)
-    const { depositRef, depositDoc, matchedId } = await findDepositDoc(db, order_no);
-    const finalOrderNo = matchedId || order_no;
-
-    if (!depositDoc || !depositDoc.exists) {
-      console.error('[ProPay] Deposit document not found for order_no:', order_no);
-      return res.status(404).send("Deposit not found");
-    }
-
     const statusStr = String(status).toLowerCase();
-    const isSuccess = ['success', 'completed', 'approved', '1', 'true'].includes(statusStr);
+    const isSuccess = ['success', 'completed', 'approved', '1', 'true', 'ok'].includes(statusStr);
 
     if (!isSuccess) {
+      console.log('[ProPay Callback] Payment status is not success:', statusStr);
       try {
+        const { depositRef } = await findDepositDoc(db, order_no);
         if (depositRef) {
           await depositRef.update({ status: 'cancelled' });
         }
-      } catch (e) {
-        console.error("Error cancelling deposit:", e);
-      }
+      } catch (e) {}
       return res.send("Transaction not successful");
     }
 
-    // Defensive Deduplication based on External TrxId (if ProPay sends it)
-    const externalTrxId = payload.transaction_id || payload.trxId || payload.trx_id || payload.bank_trx_id || payload.TxID || null;
+    // Call unified approveDepositHelper
+    const result = await approveDepositHelper(db, order_no, Number(amount) || undefined);
+    console.log('[ProPay Callback] Approval result for order', order_no, result);
 
-    if (externalTrxId) {
-      const existing = await db.collection("deposits")
-        .where("externalTrxId", "==", externalTrxId)
-        .where("status", "in", ["approved", "success"])
-        .limit(1)
-        .get();
-      if (!existing.empty) {
-        console.warn(`[ProPay Callback] Prevented duplicate credit for externalTrxId: ${externalTrxId}`);
-        return res.send("Already processed external transaction");
-      }
-    }
-
-    // Atomic Processing
-    await db.runTransaction(async (transaction) => {
-      let externalTxRef = null;
-      if (externalTrxId) {
-         externalTxRef = db.collection("processed_txids").doc(String(externalTrxId));
-         const externalTxDoc = await transaction.get(externalTxRef);
-         if (externalTxDoc.exists) {
-            throw new Error("Already processed external transaction");
-         }
-      }
-
-      const txRef = db.collection("transactions").doc(finalOrderNo);
-      const txDoc = await transaction.get(txRef);
-
-      if (txDoc.exists && (txDoc.data()?.status === 'success' || txDoc.data()?.status === 'approved')) {
-        throw new Error("Transaction already processed");
-      }
-
-      const finalDepositRef = depositRef || db.collection("deposits").doc(finalOrderNo);
-      const finalDepositDoc = depositDoc || await transaction.get(finalDepositRef);
-
-      if (!finalDepositDoc.exists) {
-        throw new Error("Deposit not found");
-      }
-
-      const depositData = finalDepositDoc.data();
-      const uid = depositData?.uid;
-
-      if (depositData?.status === 'approved' || depositData?.status === 'success') {
-        throw new Error("Transaction already processed");
-      }
-
-      if (!uid) throw new Error("UID missing in deposit document");
-
-      const userRef = db.collection("users").doc(uid);
-      const userDoc = await transaction.get(userRef);
-      const uData = userDoc.data() || {};
-      const currentBalance = parseFloat(uData.balance || "0");
-      const depositAmount = Number(depositData?.amount) || parseFloat(amount || "0");
-
-      const finalCreditMap: Record<number, number> = {
-        550: 1100,
-        1000: 2000,
-        1550: 3100,
-        3000: 6000,
-        5000: 10000,
-        10000: 20000,
-        20000: 40000,
-        30000: 60000,
-        50000: 100000
-      };
-
-      let creditAmount = depositData?.finalCredit !== undefined && Number(depositData.finalCredit) > 0
-        ? Number(depositData.finalCredit)
-        : (depositAmount === 550 ? 1100 : (finalCreditMap[depositAmount] || depositAmount));
-
-      const newBal = (currentBalance + creditAmount).toFixed(2);
-      const newTotalDep = (uData.totalDeposited || 0) + depositAmount;
-      const newAppCount = (uData.approvedDepositsCount || 0) + 1;
-      const isBonus = creditAmount > depositAmount;
-
-      transaction.set(userRef, {
-        balance: newBal,
-        totalDeposited: newTotalDep,
-        approvedDepositsCount: newAppCount,
-        adminApproved: newTotalDep >= 550 ? true : uData.adminApproved || false,
-        withdrawEnabled: newAppCount >= 2 ? true : uData.withdrawEnabled || false,
-        giftCardRedeemed: isBonus || depositAmount === 550 ? true : uData.giftCardRedeemed || false,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-
-      const userHistoryRef = db.collection("users").doc(uid).collection("history").doc(finalOrderNo);
-      transaction.set(userHistoryRef, {
-        status: "approved",
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-
-      transaction.set(txRef, {
-        uid,
-        type: 'deposit',
-        status: 'approved',
-        amount: depositAmount,
-        finalCredit: creditAmount,
-        description: isBonus ? `৳${depositAmount} ডিপোজিট সফলভাবে সম্পন্ন হয়েছে (বোনাস সহ মোট ৳${creditAmount})।` : `৳${depositAmount} ডিপোজিট সফলভাবে সম্পন্ন হয়েছে।`,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-
-      const updateData: any = { 
-        status: 'approved',
-        finalCredit: creditAmount,
-        updatedAt: new Date().toISOString()
-      };
-      if (externalTrxId) updateData.externalTrxId = externalTrxId;
-      transaction.update(finalDepositRef, updateData);
-
-      if (externalTxRef) {
-         transaction.set(externalTxRef, {
-            order_no: finalOrderNo,
-            uid,
-            amount: creditAmount,
-            createdAt: new Date().toISOString()
-         });
-      }
-    });
-
-    console.log(`[ProPay] Payment success for order: ${finalOrderNo}`);
-    res.send("Success");
+    return res.status(200).send("SUCCESS");
   } catch (err: any) {
-    console.error("Callback error:", err);
-    if (err.message === "Transaction already processed") {
-      return res.send("Already processed");
-    }
-    res.status(500).send(err.message);
+    console.error('[ProPay Callback Error]:', err);
+    return res.status(500).send(err.message);
   }
 });
-
-// Update Auth Profile
-app.post("/api/update-auth", async (req, res) => {
-  try {
-    const adminApp = getFirebaseAdmin();
-    const { uid, newUsername, newPassword, newPhone } = req.body;
-    console.log(`DEBUG: /api/update-auth request body:`, { uid, newUsername, newPassword, newPhone });
-    if (!uid) {
-      return res.status(400).json({ error: "Missing uid" });
-    }
-    const authUpdate: any = {};
-    const firestoreUpdate: any = {};
-    const db = adminApp.firestore();
-    const userDocRef = db.collection("users").doc(uid);
-    const userDoc = await userDocRef.get();
-    let dbEmail = "";
-    let dbUsername = "";
-    if (userDoc.exists) {
-      const data = userDoc.data() || {};
-      dbEmail = data.email || "";
-      dbUsername = data.username || "";
-    }
-    if (newUsername) {
-      authUpdate.email = `${newUsername.toLowerCase().replace(/\s+/g, "")}@sn777.com`;
-      firestoreUpdate.username = newUsername;
-      firestoreUpdate.email = authUpdate.email;
-    }
-    if (newPassword) {
-      authUpdate.password = newPassword;
-      firestoreUpdate.password = newPassword;
-    }
-    if (newPhone) {
-      firestoreUpdate.phone = `+880 ${newPhone}`;
-    }
-    if (newPassword) {
-      console.log(`DEBUG: Updating Auth password for user ${uid}`);
-      let success = false;
-      let lastError = null;
-      for (let i = 0; i < 3; i++) {
-        try {
-          await adminApp.auth().updateUser(uid, { password: newPassword, disabled: false });
-          success = true;
-          break;
-        } catch (authErr: any) {
-          if (authErr.code === "auth/user-not-found") {
-            console.log(`[update-auth] User not found in Firebase Auth. Re-creating auth record for uid: ${uid}`);
-            const targetEmail = dbEmail || authUpdate.email || `${(dbUsername || uid).toLowerCase().replace(/\s+/g, "")}@sn777.com`;
-            try {
-              await adminApp.auth().createUser({
-                uid,
-                email: targetEmail,
-                password: newPassword,
-                disabled: false
-              });
-              success = true;
-              break;
-            } catch (createErr: any) {
-              if (createErr.code === "auth/email-already-exists") {
-                console.log(`[update-auth] Email ${targetEmail} matches another user during creation. Cleaning up...`);
-                try {
-                  const conflictingUser = await adminApp.auth().getUserByEmail(targetEmail);
-                  if (conflictingUser && conflictingUser.uid !== uid) {
-                    await adminApp.auth().deleteUser(conflictingUser.uid);
-                    await adminApp.auth().createUser({
-                      uid,
-                      email: targetEmail,
-                      password: newPassword,
-                      disabled: false
-                    });
-                    success = true;
-                    break;
-                  }
-                } catch (cleanErr) {
-                  console.error(`[update-auth] Conflicting creation cleanup failed:`, cleanErr);
-                }
-              }
-              console.error(`[update-auth] Re-creation failed:`, createErr);
-              lastError = createErr;
-            }
-          } else {
-            lastError = authErr;
-          }
-          console.error(`DEBUG: Auth password update FAILED (attempt ${i + 1}) for user ${uid}:`, authErr);
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
-      }
-      if (!success) {
-        throw lastError;
-      }
-      await adminApp.auth().revokeRefreshTokens(uid);
-      console.log(`DEBUG: Auth password updated successfully for user ${uid}`);
-    }
-    
-    const otherAuthUpdate = { ...authUpdate };
-    delete otherAuthUpdate.password;
-    if (Object.keys(otherAuthUpdate).length > 0) {
-      console.log(`DEBUG: Updating Auth for user ${uid} with data:`, otherAuthUpdate);
-      try {
-        await adminApp.auth().updateUser(uid, otherAuthUpdate);
-      } catch (authErr: any) {
-        if (authErr.code === "auth/user-not-found") {
-          console.log(`[update-auth] User not found for other fields update. Re-creating auth record for uid: ${uid}`);
-          const targetEmail = otherAuthUpdate.email || dbEmail || `${(dbUsername || uid).toLowerCase().replace(/\s+/g, "")}@sn777.com`;
-          const targetPassword = newPassword || (userDoc.exists ? userDoc.data()?.password : undefined) || "123456";
-          await adminApp.auth().createUser({
-            uid,
-            email: targetEmail,
-            password: targetPassword,
-            disabled: false
-          });
-        } else if (authErr.code === "auth/email-already-exists") {
-          console.log(`[update-auth] Email ${otherAuthUpdate.email} matches another user during update. Cleaning up conflicting user...`);
-          try {
-            const conflictingUser = await adminApp.auth().getUserByEmail(otherAuthUpdate.email);
-            if (conflictingUser && conflictingUser.uid !== uid) {
-              console.log(`[update-auth] Deleting conflicting Auth user with UID: ${conflictingUser.uid}`);
-              await adminApp.auth().deleteUser(conflictingUser.uid);
-              await adminApp.auth().updateUser(uid, otherAuthUpdate);
-            }
-          } catch (cleanErr) {
-            console.error(`[update-auth] Conflicting email cleanup during update failed:`, cleanErr);
-            throw authErr;
-          }
-        } else {
-          throw authErr;
-        }
-      }
-    }
-    
-    if (Object.keys(firestoreUpdate).length > 0 && userDoc.exists) {
-      console.log(`DEBUG: Updating Firestore for user ${uid} with data:`, { ...firestoreUpdate, password: "***" });
-      await userDocRef.update(firestoreUpdate);
-      console.log(`DEBUG: Firestore updated successfully for user ${uid}.`);
-    }
-    res.json({ success: true, message: "Profile updated successfully!" });
-  } catch (err: any) {
-    console.error("Auth update error:", err);
-    res.status(500).json({ error: "প্রোফাইল আপডেট করতে ব্যর্থ হয়েছে: " + err.message });
-  }
-});
-
-// Debug Users
-app.get("/api/debug-users", async (req, res) => {
-  try {
-    const adminApp = getFirebaseAdmin();
-    const username = req.query.username as string;
-    let authUser: any = null;
-    try {
-      if (username) {
-        authUser = await adminApp.auth().getUserByEmail(`${username.toLowerCase().replace(/\s+/g, "")}@sn777.com`);
-      } else {
-        return res.json({ error: "provide username" });
-      }
-    } catch (e: any) {
-      authUser = { error: e.message };
-    }
-    const snapshot = await adminApp.firestore().collection("users").where("username", "==", username).get();
-    let firestoreData = null;
-    if (!snapshot.empty) {
-      firestoreData = snapshot.docs[0].data();
-    }
-    res.json({
-      auth_user: authUser,
-      firestore_data: firestoreData
-    });
-  } catch (e: any) {
-    res.json({ error: e.message });
-  }
-});
-
-// Health
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok" });
-});
-
-// Debug Project
-app.get("/api/debug-project", (req, res) => {
-  try {
-    const adminApp = getFirebaseAdmin();
-    res.json({ projectId: adminApp.app().options.projectId });
-  } catch (e: any) {
-    res.json({ error: e.message });
-  }
-});
-
-// Callback / Webhook from ProPay handler is now merged into app.post("/api/propay-callback", ...)
 
 app.all("/api/*", (req, res) => {
   res.status(404).json({ error: `API route ${req.method} ${req.url} not found` });
