@@ -410,6 +410,52 @@ app.post("/api/admin/approve-deposit", async (req, res) => {
   }
 });
 
+
+// Admin Toggle User Status (Disable / Enable)
+app.post("/api/admin/toggle-user-status", async (req, res) => {
+  try {
+    const { uid, status } = req.body; // status: 'disabled' | 'active'
+    if (!uid || !status) {
+      return res.status(400).json({ error: "Missing uid or status" });
+    }
+    const adminApp = getFirebaseAdmin();
+    const db = adminApp.firestore();
+    const isDisabled = status === "disabled";
+
+    // Update Firestore
+    const userRef = db.collection("users").doc(uid);
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "ইউজার পাওয়া যায়নি।" });
+    }
+
+    await userRef.update({
+      status,
+      disabledAt: isDisabled ? new Date().toISOString() : null,
+      updatedAt: new Date().toISOString()
+    });
+
+    // Disable in Firebase Auth to immediately invalidate auth tokens
+    try {
+      await adminApp.auth().updateUser(uid, { disabled: isDisabled });
+      if (isDisabled) {
+        await adminApp.auth().revokeRefreshTokens(uid);
+      }
+    } catch (authErr: any) {
+      console.warn("[toggle-user-status] Auth update warning:", authErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: isDisabled ? "ইউজার সফলভাবে ব্লক/ডিজেবল করা হয়েছে!" : "ইউজার সফলভাবে পুনরায় সক্রিয়/এনাবল করা হয়েছে!",
+      status
+    });
+  } catch (err: any) {
+    console.error("Toggle user status error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Admin Reject Deposit Endpoint
 app.post("/api/admin/reject-deposit", async (req, res) => {
   try {
