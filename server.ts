@@ -546,6 +546,18 @@ app.all("/api/propay-callback", upload.none(), async (req, res) => {
     }
 
     order_no = String(order_no).trim();
+
+    // Verify HMAC SHA256 Signature if provided
+    if (payload.signature && amount) {
+      const apiKey = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
+      const formattedAmount = Number(amount);
+      const expectedSignature = crypto.createHmac('sha256', apiKey).update(order_no + formattedAmount).digest('hex');
+      if (payload.signature !== expectedSignature) {
+        console.error('[ProPay Callback] Signature mismatch! Received:', payload.signature, 'Expected:', expectedSignature);
+        return res.status(403).send("Invalid Signature");
+      }
+      console.log('[ProPay Callback] Signature verified successfully!');
+    }
     const statusStr = String(status).toLowerCase();
     const isSuccess = ['success', 'completed', 'approved', '1', 'true', 'ok'].includes(statusStr);
 
