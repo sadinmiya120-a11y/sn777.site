@@ -557,31 +557,30 @@ app.post("/api/admin/toggle-user-status", async (req, res) => {
     if (!uid || !status) {
       return res.status(400).json({ error: "Missing uid or status" });
     }
-    const adminApp = getFirebaseAdmin();
-    const db = adminApp.firestore();
     const isDisabled = status === "disabled";
 
-    // Update Firestore
-    const userRef = db.collection("users").doc(uid);
-    const userDoc = await userRef.get();
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "ইউজার পাওয়া যায়নি।" });
-    }
-
-    await userRef.update({
+    await patchFirestoreDocRest(`users/${uid}`, {
       status,
       disabledAt: isDisabled ? new Date().toISOString() : null,
       updatedAt: new Date().toISOString()
     });
 
-    // Disable in Firebase Auth to immediately invalidate auth tokens
     try {
-      await adminApp.auth().updateUser(uid, { disabled: isDisabled });
-      if (isDisabled) {
-        await adminApp.auth().revokeRefreshTokens(uid);
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) {
+        const db = adminApp.firestore();
+        await db.collection("users").doc(uid).update({
+          status,
+          disabledAt: isDisabled ? new Date().toISOString() : null,
+          updatedAt: new Date().toISOString()
+        });
+        await adminApp.auth().updateUser(uid, { disabled: isDisabled });
+        if (isDisabled) {
+          await adminApp.auth().revokeRefreshTokens(uid);
+        }
       }
     } catch (authErr: any) {
-      console.warn("[toggle-user-status] Auth update warning:", authErr.message);
+      console.warn("[toggle-user-status] Admin SDK update warning:", authErr.message);
     }
 
     res.json({
