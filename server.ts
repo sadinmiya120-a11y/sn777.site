@@ -489,9 +489,12 @@ app.post("/api/verify-payment", async (req, res) => {
     if (!order_no) {
       return res.status(400).json({ error: "Missing order_no" });
     }
-    const adminApp = getFirebaseAdmin();
-    const db = adminApp.firestore();
-    
+    let db: any = null;
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) db = adminApp.firestore();
+    } catch (e) {}
+
     const result = await approveDepositHelper(db, order_no);
     if (result.success) {
       return res.json({
@@ -503,8 +506,16 @@ app.post("/api/verify-payment", async (req, res) => {
       });
     }
 
-    const { depositDoc } = await findDepositDoc(db, order_no);
-    const depositData = depositDoc?.exists ? depositDoc.data() : null;
+    let depositData: any = null;
+    const docRest = await getFirestoreDocRest("deposits", String(order_no).trim());
+    if (docRest?.data) {
+      depositData = docRest.data;
+    } else if (db) {
+      try {
+        const { depositDoc } = await findDepositDoc(db, order_no);
+        if (depositDoc?.exists) depositData = typeof depositDoc.data === "function" ? depositDoc.data() : depositDoc.data;
+      } catch(e) {}
+    }
 
     res.json({
       success: depositData?.status === "approved" || depositData?.status === "success",
@@ -718,11 +729,14 @@ app.all("/api/*", (req, res) => {
 });
 
 app.get("/success", async (req, res) => {
-  const order_no = req.query.order_no || req.query.order_id || req.query.ref;
+  const order_no = req.query.order_no || req.query.order_id || req.query.ref || req.query.cust_order_id;
   if (order_no) {
     try {
-      const adminApp = getFirebaseAdmin();
-      const db = adminApp.firestore();
+      let db: any = null;
+      try {
+        const adminApp = getFirebaseAdmin();
+        if (adminApp) db = adminApp.firestore();
+      } catch (e) {}
       await approveDepositHelper(db, String(order_no).trim());
     } catch (e) {
       console.error("/success auto-approve error:", e);
