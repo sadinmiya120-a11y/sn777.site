@@ -108,9 +108,15 @@ app.all("/api/auth-proxy/:host/*", async (req, res) => {
   }
 });
 
-app.get("/", (req, res, next) => {
-  if (req.query.m === '1' && req.query.order_no) {
-    return res.redirect(`/success?order_no=${req.query.order_no}`);
+app.get("/", async (req, res, next) => {
+  const order_no = req.query.order_no || req.query.order_id || req.query.ref || req.query.cust_order_id;
+  if (order_no) {
+    try {
+      await approveDepositHelper(null, String(order_no).trim());
+    } catch (e) {
+      console.error("[Root Auto-Approve Error]:", e);
+    }
+    return res.redirect(`/success?order_no=${order_no}`);
   }
   next();
 });
@@ -413,16 +419,44 @@ app.post("/api/create-payment", async (req, res) => {
     const { uid, amount, method } = req.body;
     if (!uid || !amount || !method) return res.status(400).json({ error: "Missing parameters" });
     const order_no = "ORD" + Date.now();
-    const adminApp = getFirebaseAdmin();
-    const db = adminApp.firestore();
-    await db.collection("deposits").doc(order_no).set({
+    const parsedAmount = parseFloat(amount);
+    const finalCreditMap: Record<number, number> = {
+      550: 1100,
+      1000: 2000,
+      2000: 4000,
+      5000: 10000,
+      10000: 20000,
+      30000: 60000,
+      50000: 100000
+    };
+    const finalCredit = parsedAmount === 550 ? 1100 : (finalCreditMap[parsedAmount] || parsedAmount);
+
+    const depositObj: any = {
       uid,
-      amount: parseFloat(amount),
+      amount: parsedAmount,
+      finalCredit,
       method,
       status: "pending",
       createdAt: new Date().toISOString(),
       order_no
-    });
+    };
+
+    // Fetch user info to populate username/phone in deposit doc
+    const userDoc = await getFirestoreDocRest("users", uid);
+    if (userDoc?.data) {
+      if (userDoc.data.username) depositObj.username = userDoc.data.username;
+      if (userDoc.data.phone) depositObj.phone = userDoc.data.phone;
+    }
+
+    await patchFirestoreDocRest(`deposits/${order_no}`, depositObj);
+
+    // Also attempt Firebase Admin if available
+    try {
+      const adminApp = getFirebaseAdmin();
+      const db = adminApp.firestore();
+      await db.collection("deposits").doc(order_no).set(depositObj, { merge: true });
+    } catch(e) {}
+
     const proto = req.headers["x-forwarded-proto"] || req.protocol;
     const host = req.get("host");
     const appUrl = process.env.APP_URL || (host ? `${proto}://${host}` : "https://sn777.site");
