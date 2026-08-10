@@ -191,57 +191,149 @@ app.post("/api/update-username", async (req, res) => {
   }
 });
 
-// Helper to find a deposit document, checking both with and without hyphen in ID
-async function findDepositDoc(db: admin.firestore.Firestore, order_no: string) {
+// Firestore REST API Helpers
+const FIRESTORE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "xbet-mobcash";
+const FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/(default)/documents`;
+
+function parseFirestoreDoc(docData: any) {
+  if (!docData || !docData.fields) return null;
+  const obj: any = {};
+  for (const [key, val] of Object.entries<any>(docData.fields)) {
+    if (val.stringValue !== undefined) obj[key] = val.stringValue;
+    else if (val.integerValue !== undefined) obj[key] = Number(val.integerValue);
+    else if (val.doubleValue !== undefined) obj[key] = Number(val.doubleValue);
+    else if (val.booleanValue !== undefined) obj[key] = val.booleanValue;
+    else if (val.timestampValue !== undefined) obj[key] = val.timestampValue;
+  }
+  return obj;
+}
+
+function toFirestoreFields(obj: any) {
+  const fields: any = {};
+  for (const [key, val] of Object.entries(obj)) {
+    if (val === undefined || val === null) continue;
+    if (typeof val === "boolean") fields[key] = { booleanValue: val };
+    else if (typeof val === "number") {
+      if (Number.isInteger(val)) fields[key] = { integerValue: val.toString() };
+      else fields[key] = { doubleValue: val };
+    }
+    else fields[key] = { stringValue: val.toString() };
+  }
+  return fields;
+}
+
+async function getFirestoreDocRest(collection: string, docId: string) {
+  try {
+    const url = `${FIRESTORE_BASE_URL}/${collection}/${docId}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return { id: docId, exists: true, data: parseFirestoreDoc(data) };
+  } catch (e) {
+    console.error(`getFirestoreDocRest error for ${collection}/${docId}:`, e);
+    return null;
+  }
+}
+
+async function patchFirestoreDocRest(collectionPath: string, dataObj: any) {
+  try {
+    const fields = toFirestoreFields(dataObj);
+    const keys = Object.keys(fields);
+    if (keys.length === 0) return true;
+    const fieldMask = keys.map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join("&");
+    const url = `${FIRESTORE_BASE_URL}/${collectionPath}?${fieldMask}`;
+    const res = await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fields })
+    });
+    return res.ok;
+  } catch (e) {
+    console.error(`patchFirestoreDocRest error for ${collectionPath}:`, e);
+    return false;
+  }
+}
+
+// Helper to find a deposit document
+async function findDepositDoc(db: any, order_no: string) {
   const cleanOrderNo = String(order_no).trim();
   
-  // 1. Exact match first
-  let depositRef = db.collection("deposits").doc(cleanOrderNo);
-  let depositDoc = await depositRef.get();
-  if (depositDoc.exists) {
-    return { depositRef, depositDoc, matchedId: cleanOrderNo };
-  }
+  let docRest = await getFirestoreDocRest("deposits", cleanOrderNo);
+  if (docRest) return { depositRef: db ? db.collection("deposits").doc(cleanOrderNo) : null, depositDoc: docRest, matchedId: cleanOrderNo };
 
-  // 2. Try removing hyphen if present (e.g. "ORD-123" -> "ORD123")
   if (cleanOrderNo.includes("-")) {
     const strippedId = cleanOrderNo.replace(/-/g, "");
-    depositRef = db.collection("deposits").doc(strippedId);
-    depositDoc = await depositRef.get();
-    if (depositDoc.exists) {
-      return { depositRef, depositDoc, matchedId: strippedId };
-    }
-  } 
-  // 3. Try adding hyphen if missing (e.g. "ORD123" -> "ORD-123")
-  else if (cleanOrderNo.startsWith("ORD")) {
+    docRest = await getFirestoreDocRest("deposits", strippedId);
+    if (docRest) return { depositRef: db ? db.collection("deposits").doc(strippedId) : null, depositDoc: docRest, matchedId: strippedId };
+  } else if (cleanOrderNo.startsWith("ORD")) {
     const hyphenatedId = "ORD-" + cleanOrderNo.substring(3);
-    depositRef = db.collection("deposits").doc(hyphenatedId);
-    depositDoc = await depositRef.get();
-    if (depositDoc.exists) {
-      return { depositRef, depositDoc, matchedId: hyphenatedId };
-    }
+    docRest = await getFirestoreDocRest("deposits", hyphenatedId);
+    if (docRest) return { depositRef: db ? db.collection("deposits").doc(hyphenatedId) : null, depositDoc: docRest, matchedId: hyphenatedId };
   }
 
-  // Fallback to exact doc ref even if it doesn't exist
-  return { depositRef: db.collection("deposits").doc(cleanOrderNo), depositDoc: null, matchedId: cleanOrderNo };
+  if (db) {
+    try {
+      let depositRef = db.collection("deposits").doc(cleanOrderNo);
+      let depositDoc = await depositRef.get();
+      if (depositDoc.exists) return { depositRef, depositDoc: { id: cleanOrderNo, exists: true, data: () => depositDoc.data() }, matchedId: cleanOrderNo };
+    } catch(e) {}
+  }
+
+  return { depositRef: db ? db.collection("deposits").doc(cleanOrderNo) : null, depositDoc: null, matchedId: cleanOrderNo };
 }
 
 
 async function approveDepositHelper(db: any, order_no: string, reqAmount?: number) {
-  const { depositRef, depositDoc, matchedId } = await findDepositDoc(db, order_no);
-  const finalOrderNo = matchedId || order_no;
-  if (!depositDoc || !depositDoc.exists) {
+  const cleanOrderNo = String(order_no).trim();
+  console.log(`[approveDepositHelper] Processing order: ${cleanOrderNo}`);
+
+  let depositDoc = await getFirestoreDocRest("deposits", cleanOrderNo);
+  let finalOrderNo = cleanOrderNo;
+
+  if (!depositDoc) {
+    if (cleanOrderNo.includes("-")) {
+      const stripped = cleanOrderNo.replace(/-/g, "");
+      depositDoc = await getFirestoreDocRest("deposits", stripped);
+      if (depositDoc) finalOrderNo = stripped;
+    } else if (cleanOrderNo.startsWith("ORD")) {
+      const hyphenated = "ORD-" + cleanOrderNo.substring(3);
+      depositDoc = await getFirestoreDocRest("deposits", hyphenated);
+      if (depositDoc) finalOrderNo = hyphenated;
+    }
+  }
+
+  if (!depositDoc && db) {
+    try {
+      const { depositDoc: adminDoc, matchedId } = await findDepositDoc(db, cleanOrderNo);
+      if (adminDoc && adminDoc.exists) {
+        depositDoc = { id: matchedId, exists: true, data: typeof adminDoc.data === "function" ? adminDoc.data() : adminDoc.data };
+        finalOrderNo = matchedId;
+      }
+    } catch(e) {}
+  }
+
+  if (!depositDoc || !depositDoc.data) {
+    console.error(`[approveDepositHelper] Deposit doc not found for: ${cleanOrderNo}`);
     return { success: false, message: "ডিপোজিট রিকোয়েস্ট পাওয়া যায়নি।" };
   }
-  const depositData = depositDoc.data();
-  const uid = depositData?.uid;
+
+  const depositData = depositDoc.data;
+  const uid = depositData.uid;
   if (!uid) {
     return { success: false, message: "ইউজার আইডি পাওয়া যায়নি।" };
   }
-  if (depositData?.status === "approved" || depositData?.status === "success") {
-    return { success: true, message: "এই ডিপোজিট ইতিমধ্যেই অ্যাপ্রুভ করা হয়েছে।", status: "approved", amount: depositData?.amount || 0, finalCredit: depositData?.finalCredit || depositData?.amount || 0 };
+
+  if (depositData.status === "approved" || depositData.status === "success") {
+    return {
+      success: true,
+      message: "এই ডিপোজিট ইতিমধ্যেই অ্যাপ্রুভ করা হয়েছে।",
+      status: "approved",
+      amount: Number(depositData.amount) || 0,
+      finalCredit: Number(depositData.finalCredit) || Number(depositData.amount) || 0
+    };
   }
 
-  let depositAmount = Number(reqAmount) || Number(depositData?.amount) || 0;
+  let depositAmount = Number(reqAmount) || Number(depositData.amount) || 0;
   const finalCreditMap: Record<number, number> = {
     550: 1100,
     1000: 2000,
@@ -253,62 +345,64 @@ async function approveDepositHelper(db: any, order_no: string, reqAmount?: numbe
     30000: 60000,
     50000: 100000
   };
-  let creditAmount = depositData?.finalCredit !== undefined && Number(depositData.finalCredit) > 0
+  let creditAmount = depositData.finalCredit !== undefined && Number(depositData.finalCredit) > 0
     ? Number(depositData.finalCredit)
     : (depositAmount === 550 ? 1100 : (finalCreditMap[depositAmount] || depositAmount));
 
-  const userRef = db.collection("users").doc(uid);
-  const txRef = db.collection("transactions").doc(finalOrderNo);
-  const userHistoryRef = db.collection("users").doc(uid).collection("history").doc(finalOrderNo);
-  const finalDepositRef = depositRef || db.collection("deposits").doc(finalOrderNo);
+  let userDocData = (await getFirestoreDocRest("users", uid))?.data;
+  if (!userDocData && db) {
+    try {
+      const uSnap = await db.collection("users").doc(uid).get();
+      if (uSnap.exists) userDocData = uSnap.data();
+    } catch(e) {}
+  }
 
-  await db.runTransaction(async (transaction: any) => {
-    const userDoc = await transaction.get(userRef);
-    if (!userDoc.exists) {
-      throw new Error("User document not found");
-    }
-    const uData = userDoc.data() || {};
-    const currBal = parseFloat(uData.balance || "0.00");
-    const newBal = (currBal + creditAmount).toFixed(2);
-    const currTotalDep = uData.totalDeposited || 0;
-    const newTotalDep = currTotalDep + depositAmount;
-    const currAppCount = uData.approvedDepositsCount || 0;
-    const newAppCount = currAppCount + 1;
-    const isBonus = creditAmount > depositAmount;
+  if (!userDocData) {
+    return { success: false, message: "ইউজার ডেটা পাওয়া যায়নি।" };
+  }
 
-    transaction.update(userRef, {
-      balance: newBal,
-      totalDeposited: newTotalDep,
-      approvedDepositsCount: newAppCount,
-      adminApproved: newTotalDep >= 550 ? true : (uData.adminApproved || false),
-      withdrawEnabled: newAppCount >= 2 ? true : (uData.withdrawEnabled || false),
-      giftCardRedeemed: isBonus || depositAmount >= 550 ? true : (uData.giftCardRedeemed || false)
-    });
+  const currBal = parseFloat(userDocData.balance || "0.00");
+  const newBal = (currBal + creditAmount).toFixed(2);
+  const currTotalDep = Number(userDocData.totalDeposited) || 0;
+  const newTotalDep = currTotalDep + depositAmount;
+  const currAppCount = Number(userDocData.approvedDepositsCount) || 0;
+  const newAppCount = currAppCount + 1;
+  const isBonus = creditAmount > depositAmount;
 
-    transaction.set(finalDepositRef, {
-      status: "approved",
-      approvedAt: new Date().toISOString(),
-      creditedAmount: creditAmount
-    }, { merge: true });
-
-    transaction.set(txRef, {
-      uid,
-      username: uData.username || depositData.username || "",
-      amount: depositAmount,
-      finalCredit: creditAmount,
-      status: "approved",
-      type: "deposit",
-      method: depositData.method || "online",
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
-
-    transaction.set(userHistoryRef, {
-      status: "approved",
-      approvedAt: new Date().toISOString(),
-      creditedAmount: creditAmount
-    }, { merge: true });
+  // Update via REST
+  await patchFirestoreDocRest(`users/${uid}`, {
+    balance: newBal,
+    totalDeposited: newTotalDep,
+    approvedDepositsCount: newAppCount,
+    adminApproved: newTotalDep >= 550 ? true : (userDocData.adminApproved || false),
+    withdrawEnabled: newAppCount >= 2 ? true : (userDocData.withdrawEnabled || false),
+    giftCardRedeemed: isBonus || depositAmount >= 550 ? true : (userDocData.giftCardRedeemed || false)
   });
 
+  await patchFirestoreDocRest(`deposits/${finalOrderNo}`, {
+    status: "approved",
+    approvedAt: new Date().toISOString(),
+    creditedAmount: creditAmount
+  });
+
+  await patchFirestoreDocRest(`transactions/${finalOrderNo}`, {
+    uid,
+    username: userDocData.username || depositData.username || "",
+    amount: depositAmount,
+    finalCredit: creditAmount,
+    status: "approved",
+    type: "deposit",
+    method: depositData.method || "online",
+    updatedAt: new Date().toISOString()
+  });
+
+  await patchFirestoreDocRest(`users/${uid}/history/${finalOrderNo}`, {
+    status: "approved",
+    approvedAt: new Date().toISOString(),
+    creditedAmount: creditAmount
+  });
+
+  console.log(`[approveDepositHelper] Successfully approved order ${finalOrderNo} and credited ${creditAmount} to user ${uid}!`);
   return { success: true, message: "ডিপোজিট অ্যাপ্রুভ হয়েছে!", status: "approved", amount: depositAmount, finalCredit: creditAmount };
 }
 
