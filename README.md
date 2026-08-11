@@ -1,4 +1,4 @@
-![Google AI Studio Banner](./banner.png)
+![Google AI Studio Banner](https://ai.studio/static/images/share-banner.png)
 
 # Run and deploy your AI Studio app
 
