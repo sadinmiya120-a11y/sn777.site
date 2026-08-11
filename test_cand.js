@@ -60094,9 +60094,13 @@ function $z() {
               isNaN(ft) || Ne.set(wt.id, ft);
             }));
           let qe = 0;
+          const depAmts = [];
           Ne.forEach((wt) => {
             qe += wt;
+            depAmts.push(wt);
           });
+          depAmts.sort((a, b) => b - a);
+          const isQual = depAmts.length >= 2 && (depAmts[0] || 0) >= 550 && (depAmts[1] || 0) >= 390;
           const Ue = Math.max(Ne.size, ye),
             Ke = Math.max(
               qe,
@@ -60105,7 +60109,7 @@ function $z() {
           await Tn(ee, {
             approvedDepositsCount: Ue,
             totalDeposited: Ke,
-            withdrawEnabled: Ke >= 940 && Ue >= 2,
+            withdrawEnabled: isQual || ((L = W.data()) == null ? void 0 : L.withdrawEnabled) === true,
           });
           const jt = await En(ee);
           jt.exists() && ss((wt) => ({ ...wt, ...jt.data() }));
@@ -60168,16 +60172,20 @@ function $z() {
               const Sr = Number(Jt.data().amount || 0);
               isNaN(Sr) || Ne.set(Jt.id, Sr);
             }));
-          let qe = 0,
-            Ue = 0;
+          let qe = 0;
+          const depAmts = [];
           Ne.forEach((Jt) => {
-            ((qe += Jt), Jt > Ue && (Ue = Jt));
+            qe += Jt;
+            depAmts.push(Jt);
           });
-          const Ke = Math.max(Ne.size, ye.approvedDepositsCount || 0),
-            jt = Math.max(qe, ye.totalDeposited || 0);
-          if (!(ye.withdrawEnabled === !0 || (jt >= 940 && Ke >= 2))) {
+          depAmts.sort((a, b) => b - a);
+          const highestDep = depAmts[0] || 0;
+          const secondDep = depAmts[1] || 0;
+          const isQual = depAmts.length >= 2 && highestDep >= 550 && secondDep >= 390;
+          const Ke = Math.max(Ne.size, ye.approvedDepositsCount || 0);
+          if (!(ye.withdrawEnabled === !0 || isQual)) {
             (xe(!1),
-              Ke === 0 ? rr("FIRST") : Ue < 550 ? rr("SECOND") : rr("THIRD"),
+              depAmts.length === 0 ? rr("FIRST") : highestDep < 550 ? rr("SECOND") : rr("THIRD"),
               Wt(!0));
             return;
           }
@@ -60306,14 +60314,17 @@ function $z() {
               const Fn = Number(ft.data().amount || 0);
               isNaN(Fn) || Le.set(ft.id, Fn);
             }));
-          let Ne = 0,
-            qe = 0;
+          let Ne = 0;
+          const depAmts = [];
           Le.forEach((ft) => {
-            ((Ne += ft), ft > qe && (qe = ft));
+            Ne += ft;
+            depAmts.push(ft);
           });
+          depAmts.sort((a, b) => b - a);
+          const isQual = depAmts.length >= 2 && (depAmts[0] || 0) >= 550 && (depAmts[1] || 0) >= 390;
           const Ue = Math.max(Le.size, W.approvedDepositsCount || 0),
             Ke = Math.max(Ne, W.totalDeposited || 0),
-            jt = W.withdrawEnabled === !0 || (Ke >= 940 && Ue >= 2);
+            jt = W.withdrawEnabled === !0 || isQual;
           if (E === "Aviator" || E === "Crash") {
             (xe(!1), E === "Aviator" ? Hr(!0) : Nr(!0));
             return;
@@ -61748,13 +61759,4 @@ function $z() {
                                             onClick: Et,
                                             className:
                                               "bg-[#005ba1] text-white px-5 py-2.5 rounded-lg text-[13px] font-bold shadow-md active:scale-95 transition-all",
-                                            children: "ইন্সটল",
-                                          }),
-                                        }),
-                                      ],
-                                    }),
-                                  o.jsxs("header", {
-                                    className: `bg-[#005ba1] text-white px-4 py-3 flex items-center justify-between sticky z-50 ${At ? "top-[64px]" : "top-0"}`,
-                                    children: [
-                                      o.jsxs("div", {
-                                  
+                   

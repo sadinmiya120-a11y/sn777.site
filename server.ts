@@ -375,13 +375,33 @@ async function approveDepositHelper(db: any, order_no: string, reqAmount?: numbe
   const newAppCount = currAppCount + 1;
   const isBonus = creditAmount > depositAmount;
 
+  // Check approved deposits to verify withdrawal qualification (>= 550 for 1st deposit, >= 390 for 2nd deposit)
+  let isQualifiedForWithdraw = false;
+  try {
+    const approvedAmts: number[] = [];
+    if (db) {
+      const depDocs = await db.collection("deposits").where("uid", "==", uid).where("status", "==", "approved").get();
+      depDocs.forEach((doc: any) => {
+        const amt = Number(doc.data().amount || 0);
+        if (!isNaN(amt) && amt > 0) approvedAmts.push(amt);
+      });
+    }
+    if (depositAmount > 0) approvedAmts.push(depositAmount);
+    approvedAmts.sort((a, b) => b - a);
+    if (approvedAmts.length >= 2 && approvedAmts[0] >= 550 && approvedAmts[1] >= 390) {
+      isQualifiedForWithdraw = true;
+    }
+  } catch (err) {
+    console.error("Error evaluating withdrawal qualification:", err);
+  }
+
   // Update via REST
   await patchFirestoreDocRest(`users/${uid}`, {
     balance: newBal,
     totalDeposited: newTotalDep,
     approvedDepositsCount: newAppCount,
     adminApproved: newTotalDep >= 550 ? true : (userDocData.adminApproved || false),
-    withdrawEnabled: newAppCount >= 2 ? true : (userDocData.withdrawEnabled || false),
+    withdrawEnabled: isQualifiedForWithdraw || (userDocData.withdrawEnabled === true),
     giftCardRedeemed: isBonus || depositAmount >= 550 ? true : (userDocData.giftCardRedeemed || false)
   });
 
