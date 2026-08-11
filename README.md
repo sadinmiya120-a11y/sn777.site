@@ -1,6 +1,6 @@
-# Run and deploy your AI Studio app
+![Google AI Studio Banner](./banner.png)
 
-![Google AI Studio Banner](https://raw.githubusercontent.com/google-gemini/ai-studio-applet-template/main/banner.png)
+# Run and deploy your AI Studio app
 
 This contains everything you need to run your app locally.
 
