@@ -49978,110 +49978,37 @@ const Hz = ({ onBack: n }) => {
           return;
         }
         if (be === "approve") {
-          const Y = await En(Ge);
-          if (Y.exists()) {
-            const G = Y.data(),
-              Ae = String(G.balance || "0").replace(/,/g, "");
-            let nt = parseFloat(Ae);
-            isNaN(nt) && (nt = 0);
-            const ht = G.totalDeposited || 0;
-            let De = je !== void 0 ? je : Number(V.amount);
-            if (De === 0) {
-              const gn = prompt("ডিপোজিটের পরিমাণ লিখুন:");
-              gn && (De = Number(gn));
-            }
-            const Ut = {
-              550: 1100,
-              1e3: 2e3,
-              1550: 3100,
-              3e3: 6e3,
-              5e3: 1e4,
-              1e4: 2e4,
-              2e4: 4e4,
-              3e4: 6e4,
-              5e4: 1e5,
-            };
-            let Dt = De;
-            De === 550
-              ? (Dt = 1100)
-              : V.finalCredit && Number(V.finalCredit) > De
-                ? (Dt = Number(V.finalCredit))
-                : Ut[De] && (Dt = Ut[De]);
-            const rn = Dt > De,
-              Qn = ht + De,
-              Wn = (G.approvedDepositsCount || 0) + 1,
-              br = (nt + Dt).toFixed(2);
-            if (
-              (await Es(Ge, {
-                balance: br,
-                totalDeposited: Qn,
-                approvedDepositsCount: Wn,
-                adminApproved: Qn >= 550 ? !0 : G.adminApproved || !1,
-                withdrawEnabled: Wn >= 2 ? !0 : G.withdrawEnabled || !1,
-                giftCardRedeemed:
-                  rn || De === 550 ? !0 : G.giftCardRedeemed || !1,
-              }),
-              G.parentId && Qn >= 550 && G.rewardTier === 1)
-            )
-              try {
-                const gn = We(Ie, "users", G.parentId),
-                  hi = await En(gn);
-                if (hi.exists()) {
-                  const xn = hi.data(),
-                    gs = 200,
-                    kn = (parseFloat(xn.balance || "0.00") + gs).toFixed(2),
-                    Mt = (xn.referralEarnings || 0) + gs;
-                  (await Es(gn, { balance: kn, referralEarnings: Mt }),
-                    await Es(Ge, { rewardTier: 3 }));
-                }
-              } catch (gn) {
-                console.error("Referral reward error:", gn);
-              }
-            (await Es(ct, {
-              status: "approved",
-              amount: De,
-              finalCredit: Dt,
-              updatedAt: new Date().toISOString(),
-            }),
-              await Ks(
-                _e,
-                {
-                  uid: V.uid,
-                  type: "deposit",
-                  amount: De,
-                  status: "approved",
-                  finalCredit: Dt,
-                  timestamp: V.timestamp || new Date().toISOString(),
-                  description: rn
-                    ? `৳${De} ডিপোজিট সফলভাবে সম্পন্ন হয়েছে (১০০% বোনাস সহ মোট ৳${Dt})।`
-                    : `৳${De} ডিপোজিট সফলভাবে সম্পন্ন হয়েছে।`,
-                  processedAt: new Date().toISOString(),
-                },
-                { merge: !0 },
-              ),
-              alert(
-                `ডিপোজিট অ্যাপ্রুভ হয়েছে! ${De} টাকার ডিপোজিটের বিপরীতে ইউজারের ব্যালেন্সে ৳${Dt} যোগ করা হয়েছে।`,
-              ));
+          let De = je !== void 0 ? je : Number(V.amount);
+          if (De === 0) {
+            const gn = prompt("ডিপোজিটের পরিমাণ লিখুন:");
+            gn && (De = Number(gn));
           }
-        } else
-          (await Tn(ct, {
-            status: "rejected",
-            updatedAt: new Date().toISOString(),
-          }),
-            await Ks(
-              _e,
-              {
-                uid: V.uid,
-                type: "deposit",
-                amount: Number(V.amount),
-                status: "rejected",
-                timestamp: V.timestamp || new Date().toISOString(),
-                description: "আপনার ডিপোজিট রিকোয়েস্টটি বাতিল করা হয়েছে।",
-                processedAt: new Date().toISOString(),
-              },
-              { merge: !0 },
-            ),
-            alert("ডিপোজিট রিজেক্ট করা হয়েছে।"));
+          const orderNo = V.id || V.order_no;
+          const res = await fetch("/api/admin/approve-deposit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ order_no: orderNo, amount: De })
+          });
+          const resData = await res.json();
+          if (res.ok && resData.success) {
+            alert(`ডিপোজিট অ্যাপ্রুভ হয়েছে! ${resData.amount || De} টাকার ডিপোজিটের বিপরীতে ইউজারের ব্যালেন্সে ৳${resData.finalCredit || resData.amount || De} যোগ করা হয়েছে।`);
+          } else {
+            alert(resData.error || resData.message || "ডিপোজিট অ্যাপ্রুভ করতে সমস্যা হয়েছে।");
+          }
+        } else if (be === "reject") {
+          const orderNo = V.id || V.order_no;
+          const res = await fetch("/api/admin/reject-deposit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ order_no: orderNo })
+          });
+          const resData = await res.json();
+          if (res.ok && resData.success) {
+            alert("ডিপোজিট রিজেক্ট করা হয়েছে।");
+          } else {
+            alert(resData.error || resData.message || "ডিপোজিট রিজেক্ট করতে সমস্যা হয়েছে।");
+          }
+        }
       } catch (ct) {
         (console.error("Error updating deposit:", ct),
           alert("ডিপোজিট আপডেট করতে সমস্যা হয়েছে।"));

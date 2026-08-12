@@ -379,12 +379,35 @@ async function approveDepositHelper(db: any, order_no: string, reqAmount?: numbe
   let isQualifiedForWithdraw = false;
   try {
     const approvedAmts: number[] = [];
-    if (db) {
-      const depDocs = await db.collection("deposits").where("uid", "==", uid).where("status", "==", "approved").get();
-      depDocs.forEach((doc: any) => {
-        const amt = Number(doc.data().amount || 0);
-        if (!isNaN(amt) && amt > 0) approvedAmts.push(amt);
-      });
+    const runQuery = await fetch(`${FIRESTORE_BASE_URL}:runQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: "deposits" }],
+          where: {
+            compositeFilter: {
+              op: "AND",
+              filters: [
+                { fieldFilter: { field: { fieldPath: "uid" }, op: "EQUAL", value: { stringValue: uid } } },
+                { fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "approved" } } }
+              ]
+            }
+          }
+        }
+      })
+    });
+    if (runQuery.ok) {
+      const qDocs = await runQuery.json();
+      if (Array.isArray(qDocs)) {
+        qDocs.forEach((item: any) => {
+          if (item.document) {
+            const parsed = parseFirestoreDoc(item.document);
+            const amt = Number(parsed?.amount || 0);
+            if (!isNaN(amt) && amt > 0) approvedAmts.push(amt);
+          }
+        });
+      }
     }
     if (depositAmount > 0) approvedAmts.push(depositAmount);
     approvedAmts.sort((a, b) => b - a);
@@ -621,24 +644,54 @@ app.post("/api/admin/reject-deposit", async (req, res) => {
     if (!order_no) {
       return res.status(400).json({ error: "Missing order_no" });
     }
-    const adminApp = getFirebaseAdmin();
-    const db = adminApp.firestore();
+    const cleanOrderNo = String(order_no).trim();
 
-    const { depositRef, depositDoc, matchedId } = await findDepositDoc(db, order_no);
-    const finalOrderNo = matchedId || order_no;
+    let depositDoc = await getFirestoreDocRest("deposits", cleanOrderNo);
+    let finalOrderNo = cleanOrderNo;
 
-    if (!depositDoc || !depositDoc.exists) {
+    if (!depositDoc) {
+      if (cleanOrderNo.includes("-")) {
+        const stripped = cleanOrderNo.replace(/-/g, "");
+        depositDoc = await getFirestoreDocRest("deposits", stripped);
+        if (depositDoc) finalOrderNo = stripped;
+      } else if (cleanOrderNo.startsWith("ORD")) {
+        const hyphenated = "ORD-" + cleanOrderNo.substring(3);
+        depositDoc = await getFirestoreDocRest("deposits", hyphenated);
+        if (depositDoc) finalOrderNo = hyphenated;
+      }
+    }
+
+    if (!depositDoc || !depositDoc.data) {
       return res.status(404).json({ error: "ডিপোজিট রিকোয়েস্ট পাওয়া যায়নি।" });
     }
 
-    const depositData = depositDoc.data();
+    const depositData = depositDoc.data;
     const uid = depositData?.uid;
 
-    await depositRef.set({ status: "rejected", updatedAt: new Date().toISOString() }, { merge: true });
-    await db.collection("transactions").doc(finalOrderNo).set({ status: "rejected", processedAt: new Date().toISOString() }, { merge: true });
+    await patchFirestoreDocRest(`deposits/${finalOrderNo}`, {
+      status: "rejected",
+      updatedAt: new Date().toISOString()
+    });
+
+    await patchFirestoreDocRest(`transactions/${finalOrderNo}`, {
+      status: "rejected",
+      updatedAt: new Date().toISOString()
+    });
+
     if (uid) {
-      await db.collection("users").doc(uid).collection("history").doc(finalOrderNo).set({ status: "rejected", updatedAt: new Date().toISOString() }, { merge: true });
+      await patchFirestoreDocRest(`users/${uid}/history/${finalOrderNo}`, {
+        status: "rejected",
+        updatedAt: new Date().toISOString()
+      });
     }
+
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) {
+        const db = adminApp.firestore();
+        await db.collection("deposits").doc(finalOrderNo).set({ status: "rejected", updatedAt: new Date().toISOString() }, { merge: true });
+      }
+    } catch (e) {}
 
     res.json({ success: true, message: "ডিপোজিট রিজেক্ট করা হয়েছে।" });
   } catch (err: any) {
@@ -1008,37 +1061,55 @@ async function startServer() {
   
     cron.schedule("* * * * *", async () => {
       console.log("[Cron] Running auto-cancel check for pending deposits");
-      const db = getFirebaseAdmin().firestore();
       const sixtyMinutesAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
       try {
-        const pendingDeposits = await db.collection("deposits").where("status", "==", "pending").get();
-        console.log(`[Cron] Found ${pendingDeposits.docs.length} pending deposits`);
-        for (const doc of pendingDeposits.docs) {
-          const data = doc.data();
+        const pendingDocs: { id: string, data: any }[] = [];
+        try {
+          const runQuery = await fetch(`${FIRESTORE_BASE_URL}:runQuery`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              structuredQuery: {
+                from: [{ collectionId: "deposits" }],
+                where: {
+                  fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "pending" } }
+                }
+              }
+            })
+          });
+          if (runQuery.ok) {
+            const resJson = await runQuery.json();
+            if (Array.isArray(resJson)) {
+              resJson.forEach((item: any) => {
+                if (item.document) {
+                  const docId = item.document.name.split("/").pop();
+                  const data = parseFirestoreDoc(item.document);
+                  if (docId && data) pendingDocs.push({ id: docId, data });
+                }
+              });
+            }
+          }
+        } catch (e) {
+          console.error("[Cron] REST query error:", e);
+        }
+
+        console.log(`[Cron] Found ${pendingDocs.length} pending deposits`);
+        for (const item of pendingDocs) {
+          const depositId = item.id;
+          const data = item.data;
           let createdDate = data.timestamp || data.createdAt;
-          if (createdDate && typeof (createdDate as any).toDate === "function") {
-            createdDate = (createdDate as any).toDate().toISOString();
-          } else if (createdDate && typeof createdDate === "string") {
-            // already string
+          if (createdDate && typeof createdDate === "string") {
+            // valid string
           } else {
             continue;
           }
           if (createdDate && createdDate < sixtyMinutesAgo) {
-            const depositId = doc.id;
             const uid = data.uid;
-            await doc.ref.update({ status: "cancelled" });
+            await patchFirestoreDocRest(`deposits/${depositId}`, { status: "cancelled" });
             console.log(`[Cron] Auto-cancelled deposits/${depositId}`);
-            try {
-              await db.collection("transactions").doc(depositId).set({ status: "cancelled" }, { merge: true });
-            } catch (txErr: any) {
-              console.log(`[Cron] Transactions doc ${depositId} error:`, txErr.message);
-            }
+            await patchFirestoreDocRest(`transactions/${depositId}`, { status: "cancelled" });
             if (uid) {
-              try {
-                await db.collection("users").doc(uid).collection("history").doc(depositId).set({ status: "cancelled" }, { merge: true });
-              } catch (histErr: any) {
-                console.log(`[Cron] History doc ${depositId} error:`, histErr.message);
-              }
+              await patchFirestoreDocRest(`users/${uid}/history/${depositId}`, { status: "cancelled" });
             }
           }
         }
