@@ -594,6 +594,113 @@ app.post("/api/admin/approve-deposit", async (req, res) => {
 
 
 // Admin Toggle User Status (Disable / Enable)
+app.post("/api/register-user-profile", async (req, res) => {
+  try {
+    const { uid, username, email, phone, password, parentId, deviceId, lastIp } = req.body;
+    if (!uid || !username) {
+      return res.status(400).json({ error: "Missing uid or username" });
+    }
+
+    const cleanUsername = username.trim();
+    const userEmail = email || `${cleanUsername.toLowerCase().replace(/\s+/g, "")}@sn777.com`;
+    const userPhone = phone ? (phone.startsWith("+880") ? phone : `+880 ${phone.replace(/^0+/, "")}`) : "+880 1XXXXXXXXX";
+
+    const adminApp = getFirebaseAdmin();
+    if (!adminApp) return res.status(500).json({ error: "Firebase admin unavailable" });
+    const db = adminApp.firestore();
+
+    const userRef = db.collection("users").doc(uid);
+    const snap = await userRef.get();
+    const existing = snap.exists ? snap.data() : {};
+
+    const generateInviteCode = () => "sn_" + Math.random().toString(36).substring(2, 9).toUpperCase();
+
+    const profileData = {
+      username: cleanUsername,
+      email: userEmail,
+      phone: userPhone,
+      password: password || existing?.password || "",
+      balance: existing?.balance || "777.00",
+      totalDeposited: existing?.totalDeposited || 0,
+      approvedDepositsCount: existing?.approvedDepositsCount || 0,
+      parentId: parentId || existing?.parentId || "",
+      rewardTier: (parentId || existing?.parentId) ? 1 : 0,
+      inviteCode: existing?.inviteCode || generateInviteCode(),
+      referralEarnings: existing?.referralEarnings || 0,
+      totalReferrals: existing?.totalReferrals || 0,
+      personalWinRate: 50,
+      role: cleanUsername.toLowerCase() === "admin" ? "admin" : "user",
+      registrationDate: existing?.registrationDate || new Date().toISOString(),
+      deviceId: deviceId || existing?.deviceId || "",
+      lastIp: lastIp || existing?.lastIp || "",
+      lastActive: new Date().toISOString()
+    };
+
+    await userRef.set(profileData, { merge: true });
+    console.log(`[register-user-profile] Profile saved for UID: ${uid}, username: ${cleanUsername}`);
+    return res.json({ success: true, profile: profileData });
+  } catch (err: any) {
+    console.error("[register-user-profile] Error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/repair-user-profile", async (req, res) => {
+  try {
+    const { uid, username, password } = req.body;
+    if (!uid) return res.status(400).json({ error: "Missing uid" });
+
+    const adminApp = getFirebaseAdmin();
+    if (!adminApp) return res.status(500).json({ error: "Firebase admin unavailable" });
+    const db = adminApp.firestore();
+
+    const userRef = db.collection("users").doc(uid);
+    const snap = await userRef.get();
+    if (!snap.exists) {
+      return res.status(404).json({ error: "User doc not found" });
+    }
+
+    const data = snap.data() || {};
+    const needsRepair = !data.username || data.username === "User" || data.username === "ব্যবহারকারী" || !data.phone;
+
+    if (!needsRepair) {
+      return res.json({ success: true, repaired: false, profile: data });
+    }
+
+    let authEmail = data.email || "";
+    if (!authEmail) {
+      try {
+        const authUser = await adminApp.auth().getUser(uid);
+        authEmail = authUser.email || "";
+      } catch (e) {}
+    }
+
+    const repairedUsername = username || data.username || (authEmail ? authEmail.split("@")[0] : "user_" + uid.substring(0, 6));
+    const generateInviteCode = () => "sn_" + Math.random().toString(36).substring(2, 9).toUpperCase();
+
+    const repairedData = {
+      username: repairedUsername,
+      email: authEmail || `${repairedUsername.toLowerCase().replace(/\s+/g, "")}@sn777.com`,
+      phone: data.phone && data.phone !== "N/A" && !data.phone.includes("X") ? data.phone : "+880 1700000000",
+      password: password || data.password || "123456",
+      balance: data.balance || "777.00",
+      totalDeposited: data.totalDeposited || 0,
+      approvedDepositsCount: data.approvedDepositsCount || 0,
+      inviteCode: data.inviteCode || generateInviteCode(),
+      role: repairedUsername.toLowerCase() === "admin" ? "admin" : "user",
+      registrationDate: data.registrationDate || new Date().toISOString(),
+      lastActive: new Date().toISOString()
+    };
+
+    await userRef.set(repairedData, { merge: true });
+    console.log(`[repair-user-profile] Repaired user UID: ${uid} with username: ${repairedUsername}`);
+    return res.json({ success: true, repaired: true, profile: repairedData });
+  } catch (err: any) {
+    console.error("[repair-user-profile] Error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/admin/toggle-user-status", async (req, res) => {
   try {
     const { uid, status } = req.body; // status: 'disabled' | 'active'

@@ -58715,6 +58715,11 @@ function $z() {
                       "পেমেন্ট যাচাই করা হচ্ছে, অনুগ্রহ করে কয়েক সেকেন্ড অপেক্ষা করুন... (ভেরিফাই সম্পন্ন হলে অটো ব্যালেন্স এড হবে)",
                     );
                     Er(!0);
+                    fetch("/api/verify-payment", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ order_no: L })
+                    }).catch((vErr) => console.error("Verify payment call error:", vErr));
                     const pollInterval = setInterval(async () => {
                       try {
                         const latestDoc = await En(Te);
@@ -59005,7 +59010,7 @@ function $z() {
       const L = (ee = gt.currentUser) == null ? void 0 : ee.uid;
       return (
         L &&
-          (Es(We(Ie, "users", L), { lastActive: ac() }).catch((W) =>
+          (Tn(We(Ie, "users", L), { lastActive: ac() }).catch((W) =>
             console.warn("Heartbeat error:", W),
           ),
           (E = setInterval(() => {
@@ -59385,7 +59390,30 @@ function $z() {
                 (L.email === "sadinmiya120@gmail.com" &&
                   Ue.role !== "admin" &&
                   Es(W, { role: "admin" }),
-                ss((Ke) => ({ ...Ke, ...Ue })),
+                if (!Ue.username || !Ue.phone || Ue.username === "User" || Ue.username === "ব্যবহারকারী") {
+                const savedUser = on.getItem("sn777_username");
+                const savedPass = on.getItem("sn777_password");
+                fetch("/api/repair-user-profile", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    uid: L.uid,
+                    username: savedUser,
+                    password: savedPass
+                  })
+                }).then((cn) => cn.json()).then((cnData) => {
+                  if (cnData.success && cnData.profile) {
+                    ss((Ke) => ({ ...Ke, ...cnData.profile }));
+                  } else {
+                    ss((Ke) => ({ ...Ke, ...Ue }));
+                  }
+                }).catch((cn) => {
+                  console.warn("Repair profile error:", cn);
+                  ss((Ke) => ({ ...Ke, ...Ue }));
+                });
+              } else {
+                ss((Ke) => ({ ...Ke, ...Ue }));
+              },
                 Ue.parentId && Ue.totalDeposited >= 100 && Ue.rewardTier === 1)
               ) {
                 const Ke = We(Ie, "users", Ue.parentId),
@@ -59838,6 +59866,20 @@ function $z() {
             } catch (cn) {
               console.error("Referral reward error:", cn);
             }
+          await fetch("/api/register-user-profile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              uid: Vg.uid,
+              username: ee,
+              email: Sr,
+              phone: wt,
+              password: W,
+              parentId: Jt,
+              deviceId: ye,
+              lastIp: wd
+            })
+          }).catch((cn) => console.warn("Backup register-user-profile API warning:", cn));
           await Ks(We(Ie, "users", Vg.uid), Rf);
           const kf = Math.max(Ne + 1, Le + 1);
           (on.setItem("sn777_created_accounts_count", kf.toString()),
@@ -60425,7 +60467,7 @@ function $z() {
           qe.includes("run.app") ||
           (qe = window.location.origin);
         const Ue = `${qe}/api/propay-callback`,
-          Ke = `${qe}?m=1&order_no=${Te}`,
+          Ke = `${qe}/success?m=1&order_no=${Te}`,
           jt =
             Be === "bkash"
               ? "https://checkout.propay.cyou/pay/Bkash.php"
