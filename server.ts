@@ -907,8 +907,9 @@ app.all("/api/*", (req, res) => {
   res.status(404).json({ error: `API route ${req.method} ${req.url} not found` });
 });
 
-app.get("/success", async (req, res) => {
-  const order_no = req.query.order_no || req.query.order_id || req.query.ref || req.query.cust_order_id;
+app.all("/success", async (req, res) => {
+  const payload = { ...(req.query || {}), ...(req.body || {}) };
+  const order_no = payload.order_no || payload.order_id || payload.ref || payload.cust_order_id || payload.reference;
   if (order_no) {
     try {
       let db: any = null;
@@ -960,7 +961,7 @@ app.get("/success", async (req, res) => {
   `);
 });
 
-app.get("/fail", (req, res) => {
+app.all("/fail", (req, res) => {
   res.send(`
   <!DOCTYPE html>
   <html lang="bn">

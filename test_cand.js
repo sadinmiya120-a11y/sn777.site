@@ -58693,10 +58693,17 @@ function $z() {
     [Li, so] = R.useState(!1),
     [pi, ga] = R.useState("");
   R.useEffect(() => {
-    if (!gt.currentUser) return;
     const E = new URLSearchParams(window.location.search),
       L = E.get("order_no"),
       ee = E.get("m");
+    if (L && (L.startsWith("deposit_") || L.startsWith("ORD"))) {
+      fetch("/api/verify-payment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_no: L })
+      }).catch((vErr) => console.error("Immediate verify payment call error:", vErr));
+    }
+    if (!gt.currentUser) return;
     if (L && (L.startsWith("deposit_") || L.startsWith("ORD"))) {
       ee === "1"
         ? (async () => {

@@ -3,16 +3,15 @@ const fs = require('fs');
 function patchFile(filePath) {
   let content = fs.readFileSync(filePath, 'utf8');
 
-  // 1. Add fetch("/api/verify-payment") call on client-side when returning with order_no
-  const target1 = 'if (Ne.status === "pending") {\n                  const Ke = Ne.uid;\n                  if (\n                    Ke === ((ye = gt.currentUser) == null ? void 0 : ye.uid)\n                  ) {\n                    sr(\n                      "পেমেন্ট যাচাই করা হচ্ছে, অনুগ্রহ করে কয়েক সেকেন্ড অপেক্ষা করুন... (ভেরিফাই সম্পন্ন হলে অটো ব্যালেন্স এড হবে)",\n                    );\n                    Er(!0);';
+  const oldBlock = '  R.useEffect(() => {\n    if (!gt.currentUser) return;\n    const E = new URLSearchParams(window.location.search),\n      L = E.get("order_no"),\n      ee = E.get("m");\n    if (L && (L.startsWith("deposit_") || L.startsWith("ORD"))) {';
 
-  const replace1 = 'if (Ne.status === "pending") {\n                  const Ke = Ne.uid;\n                  if (\n                    Ke === ((ye = gt.currentUser) == null ? void 0 : ye.uid)\n                  ) {\n                    sr(\n                      "পেমেন্ট যাচাই করা হচ্ছে, অনুগ্রহ করে কয়েক সেকেন্ড অপেক্ষা করুন... (ভেরিফাই সম্পন্ন হলে অটো ব্যালেন্স এড হবে)",\n                    );\n                    Er(!0);\n                    fetch("/api/verify-payment", {\n                      method: "POST",\n                      headers: { "Content-Type": "application/json" },\n                      body: JSON.stringify({ order_no: L })\n                    }).catch((vErr) => console.error("Verify payment call error:", vErr));';
+  const newBlock = '  R.useEffect(() => {\n    const E = new URLSearchParams(window.location.search),\n      L = E.get("order_no"),\n      ee = E.get("m");\n    if (L && (L.startsWith("deposit_") || L.startsWith("ORD"))) {\n      fetch("/api/verify-payment", {\n        method: "POST",\n        headers: { "Content-Type": "application/json" },\n        body: JSON.stringify({ order_no: L })\n      }).catch((vErr) => console.error("Immediate verify payment call error:", vErr));\n    }\n    if (!gt.currentUser) return;\n    if (L && (L.startsWith("deposit_") || L.startsWith("ORD"))) {';
 
-  if (content.includes(target1)) {
-    content = content.replace(target1, replace1);
-    console.log(`[1] Successfully added verify-payment call to ${filePath}`);
+  if (content.includes(oldBlock)) {
+    content = content.replace(oldBlock, newBlock);
+    console.log(`[Unconditional Verify] Patched ${filePath}`);
   } else {
-    console.warn(`[1] Target 1 not found in ${filePath}`);
+    console.warn(`[Unconditional Verify] Block not found in ${filePath}`);
   }
 
   // 2. Ensure return_url uses /success endpoint so server route auto-approves on redirect
@@ -21,13 +20,12 @@ function patchFile(filePath) {
 
   if (content.includes(target2)) {
     content = content.replace(target2, replace2);
-    console.log(`[2] Successfully updated return_url to /success in ${filePath}`);
+    console.log(`[return_url] Successfully updated return_url to /success in ${filePath}`);
   } else {
-    console.warn(`[2] Target 2 not found in ${filePath}`);
+    console.warn(`[return_url] Target 2 not found in ${filePath}`);
   }
 
   fs.writeFileSync(filePath, content, 'utf8');
 }
 
 patchFile('test_cand.js');
-patchFile('dist_backup/assets/index-CUhzlpga-v3.js');
