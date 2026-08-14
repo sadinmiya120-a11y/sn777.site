@@ -58703,6 +58703,34 @@ function $z() {
         body: JSON.stringify({ order_no: L })
       }).catch((vErr) => console.error("Immediate verify payment call error:", vErr));
     }
+    try {
+      const storedPending = localStorage.getItem("sn777_pending_order");
+      if (storedPending) {
+        const pData = JSON.parse(storedPending);
+        if (pData?.order_no && Date.now() - (pData.time || 0) < 7200000) {
+          fetch("/api/verify-payment", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ order_no: pData.order_no })
+          })
+          .then(r => r.json())
+          .then(res => {
+            if (res.status === "approved" || res.success) {
+              localStorage.removeItem("sn777_pending_order");
+              if (gt.currentUser) {
+                En(We(Ie, "users", gt.currentUser.uid)).then(uDoc => {
+                  if (uDoc.exists()) {
+                    const uD = uDoc.data();
+                    ss(prev => prev ? { ...prev, balance: uD.balance, totalDeposited: uD.totalDeposited } : null);
+                  }
+                });
+              }
+            }
+          })
+          .catch(() => {});
+        }
+      }
+    } catch(e) {}
     if (!gt.currentUser) return;
     if (L && (L.startsWith("deposit_") || L.startsWith("ORD"))) {
       ee === "1"
@@ -60485,9 +60513,16 @@ function $z() {
             amount: Number(E).toFixed(2),
             order_no: Te,
             return_url: Ke,
+            success_url: Ke,
+            cancel_url: `${qe}/fail?order_no=${Te}`,
+            callback_url: Ue,
+            webhook_url: Ue,
+            notify_url: Ue,
+            ipn_url: Ue,
             pass_through_key: Ne,
             pass_through_callback_url: Ue,
           });
+          try { localStorage.setItem("sn777_pending_order", JSON.stringify({ order_no: Te, amount: Number(E), time: Date.now() })); } catch(e) {}
         Le = `${jt}?${wt.toString()}`;
       }
       xe(!0);
@@ -61718,21 +61753,4 @@ function $z() {
                                                 o.jsx("span", {
                                                   className:
                                                     "font-bold text-black text-[13px] leading-tight",
-                                                  children:
-                                                    "এখনি Sn777.top অ্যাপ ইন্সটল",
-                                                }),
-                                                o.jsx("span", {
-                                                  className:
-                                                    "font-bold text-black text-[13px] leading-tight",
-                                                  children: "করুন।",
-                                                }),
-                                              ],
-                                            }),
-                                          ],
-                                        }),
-                                        o.jsx("div", {
-                                          children: o.jsx("button", {
-                                            onClick: Et,
-                                            className:
-                                              "bg-[#005ba1] text-white px-5 py-2.5 rounded-lg text-[13px] font-bold shadow-md active:scale-95 transition-all",
-                   
+                        
