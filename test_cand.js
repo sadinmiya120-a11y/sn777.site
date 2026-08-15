@@ -59864,13 +59864,22 @@ function $z() {
           (on.setItem("sn777_username", ee), on.setItem("sn777_password", W));
           const Vg = (await MO(gt, Sr, W)).user,
             Rf = {
-              ...ve,
+              name: "সম্পূর্ণ নাম",
               username: ee,
               email: Sr,
               phone: wt,
               password: W,
+              birthday: "১৯৯৮/০১/০১",
+              rank: "Bronze",
+              points: 0,
               balance: "777.00",
+              testCoin: 0,
               totalDeposited: 0,
+              approvedDepositsCount: 0,
+              adminApproved: !1,
+              withdrawEnabled: !1,
+              status: "active",
+              isBlocked: !1,
               parentId: Jt,
               rewardTier: Jt ? 1 : 0,
               inviteCode: wl(),
@@ -59881,6 +59890,7 @@ function $z() {
               registrationDate: new Date().toISOString(),
               deviceId: ye,
               lastIp: wd,
+              lastActive: ac(),
             };
           if (Jt)
             try {
@@ -61748,9 +61758,4 @@ function $z() {
                                                 "w-11 h-11 object-contain rounded-lg shadow-md bg-white p-1",
                                             }),
                                             o.jsxs("div", {
-                                              className: "flex flex-col",
-                                              children: [
-                                                o.jsx("span", {
-                                                  className:
-                                                    "font-bold text-black text-[13px] leading-tight",
-                        
+         

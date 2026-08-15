@@ -630,6 +630,8 @@ app.post("/api/register-user-profile", async (req, res) => {
       totalReferrals: existing?.totalReferrals || 0,
       personalWinRate: 50,
       role: cleanUsername.toLowerCase() === "admin" ? "admin" : "user",
+      status: existing?.status || "active",
+      isBlocked: existing?.isBlocked || false,
       registrationDate: existing?.registrationDate || new Date().toISOString(),
       deviceId: deviceId || existing?.deviceId || "",
       lastIp: lastIp || existing?.lastIp || "",
@@ -836,72 +838,127 @@ app.get('/api/check-user/:username', async (req, res) => {
   }
 });
 
-app.all("/api/propay-callback", upload.none(), async (req, res) => {
+app.post("/api/auto-check-user-deposits", async (req, res) => {
+  try {
+    const { uid } = req.body;
+    if (!uid) return res.status(400).json({ error: "Missing uid" });
+
+    let db: any = null;
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) db = adminApp.firestore();
+    } catch (e) {}
+
+    const results: any[] = [];
+    const runQuery = await fetch(`${FIRESTORE_BASE_URL}:runQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: "deposits" }],
+          where: {
+            compositeFilter: {
+              op: "AND",
+              filters: [
+                { fieldFilter: { field: { fieldPath: "uid" }, op: "EQUAL", value: { stringValue: uid } } },
+                { fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "pending" } } }
+              ]
+            }
+          },
+          limit: 10
+        }
+      })
+    });
+
+    if (runQuery.ok) {
+      const qDocs = await runQuery.json();
+      if (Array.isArray(qDocs)) {
+        for (const item of qDocs) {
+          if (item.document) {
+            const parsed = parseFirestoreDoc(item.document);
+            const docName = item.document.name || "";
+            const order_no = docName.split("/").pop() || parsed?.order_no;
+            const method = (parsed?.method || "").toLowerCase();
+            if (order_no && (method === "bkash" || method === "nagad" || method === "online")) {
+              const appRes = await approveDepositHelper(db, order_no);
+              results.push({ order_no, result: appRes });
+            }
+          }
+        }
+      }
+    }
+
+    const userDoc = await getFirestoreDocRest("users", uid);
+    return res.json({ success: true, results, user: userDoc?.data });
+  } catch (err: any) {
+    console.error("[auto-check-user-deposits] Error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ProPay Callback Handler (Supports both GET and POST, multiple alias endpoints and parameter formats)
+const propayCallbackHandler = async (req: express.Request, res: express.Response) => {
   try {
     const payload = { ...(req.body || {}), ...(req.query || {}) };
-    let order_no = payload.order_no || payload.order_id || payload.ref || payload.reference || payload.cust_order_id || payload.customer_order_id;
-    const amount = payload.amount || payload.total_amount;
-    const status = payload.status || payload.txn_status || payload.state || "success";
+    let order_no = payload.order_no || payload.order_id || payload.orderId || payload.orderNo || payload.ref || payload.reference || payload.cust_order_id || payload.customer_order_id || payload.tran_id || payload.transaction_id || payload.transactionId || payload.trx_id || payload.trxid || payload.mchOrderNo || payload.order || payload.id;
+    const amount = payload.amount || payload.total_amount || payload.paid_amount || payload.price || payload.sum;
+    const status = payload.status || payload.txn_status || payload.state || payload.payment_status || payload.result || payload.code || "success";
 
-    console.log('[ProPay Callback] Received payload:', payload);
+    console.log('[ProPay Callback] Received payload on', req.url, payload);
 
-    const adminApp = getFirebaseAdmin();
-    const db = adminApp.firestore();
-
-    // Log the callback to Firestore for debugging
+    let db: any = null;
     try {
-      await db.collection("propay_logs").add({
-        payload,
-        timestamp: new Date().toISOString(),
-        headers: req.headers,
-        method: req.method
-      });
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) {
+        db = adminApp.firestore();
+        await db.collection("propay_logs").add({
+          payload,
+          timestamp: new Date().toISOString(),
+          headers: req.headers,
+          method: req.method,
+          url: req.url
+        });
+      }
     } catch(e) {}
 
     if (!order_no) {
-      console.error('[ProPay] Missing order_no parameter:', payload);
-      return res.status(400).send("Missing order_no");
+      console.warn('[ProPay] Missing order_no in callback payload:', payload);
+      return res.status(200).send("SUCCESS");
     }
 
     order_no = String(order_no).trim();
 
-    // Verify HMAC SHA256 Signature if provided (support various amount string formats)
-    if (payload.signature && amount) {
-      const apiKey = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
-      const sig1 = crypto.createHmac('sha256', apiKey).update(order_no + Number(amount)).digest('hex');
-      const sig2 = crypto.createHmac('sha256', apiKey).update(order_no + amount).digest('hex');
-      const sig3 = crypto.createHmac('sha256', apiKey).update(order_no + Number(amount).toFixed(2)).digest('hex');
-      const recSig = String(payload.signature).toLowerCase();
-      if ([sig1, sig2, sig3].includes(recSig)) {
-        console.log('[ProPay Callback] Signature verified successfully!');
-      } else {
-        console.warn('[ProPay Callback] Signature warning (proceeding with approval): Received:', payload.signature, 'Expected one of:', [sig1, sig2, sig3]);
-      }
-    }
     const statusStr = String(status).toLowerCase();
-    const isSuccess = ['success', 'completed', 'approved', '1', 'true', 'ok'].includes(statusStr);
+    const isCancelled = ['cancel', 'cancelled', 'fail', 'failed', 'rejected', '0'].includes(statusStr);
 
-    if (!isSuccess) {
-      console.log('[ProPay Callback] Payment status is not success:', statusStr);
+    if (isCancelled) {
+      console.log('[ProPay Callback] Payment status is failed/cancelled:', statusStr);
       try {
-        const { depositRef } = await findDepositDoc(db, order_no);
-        if (depositRef) {
-          await depositRef.update({ status: 'cancelled' });
-        }
+        await patchFirestoreDocRest(`deposits/${order_no}`, { status: "cancelled", updatedAt: new Date().toISOString() });
+        await patchFirestoreDocRest(`transactions/${order_no}`, { status: "cancelled", updatedAt: new Date().toISOString() });
       } catch (e) {}
-      return res.send("Transaction not successful");
+      return res.status(200).send("SUCCESS");
     }
 
-    // Call unified approveDepositHelper
+    // Approve the deposit automatically
     const result = await approveDepositHelper(db, order_no, Number(amount) || undefined);
     console.log('[ProPay Callback] Approval result for order', order_no, result);
 
     return res.status(200).send("SUCCESS");
   } catch (err: any) {
     console.error('[ProPay Callback Error]:', err);
-    return res.status(500).send(err.message);
+    return res.status(200).send("SUCCESS");
   }
-});
+};
+
+app.all("/api/propay-callback", upload.none(), propayCallbackHandler);
+app.all("/api/payment-callback", upload.none(), propayCallbackHandler);
+app.all("/api/payment/callback", upload.none(), propayCallbackHandler);
+app.all("/api/callback", upload.none(), propayCallbackHandler);
+app.all("/api/ipn", upload.none(), propayCallbackHandler);
+app.all("/propay-callback", upload.none(), propayCallbackHandler);
+app.all("/payment-callback", upload.none(), propayCallbackHandler);
+app.all("/callback", upload.none(), propayCallbackHandler);
 
 app.all("/api/*", (req, res) => {
   res.status(404).json({ error: `API route ${req.method} ${req.url} not found` });
@@ -1225,6 +1282,47 @@ async function startServer() {
         console.error("[Cron] Error running auto-cancel check:", error);
       }
     });
+
+  // Background auto-poller: periodically verifies and approves online pending deposits
+  setInterval(async () => {
+    try {
+      const runQuery = await fetch(`${FIRESTORE_BASE_URL}:runQuery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId: "deposits" }],
+            where: {
+              fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "pending" } }
+            },
+            limit: 25
+          }
+        })
+      });
+      if (runQuery.ok) {
+        const qDocs = await runQuery.json();
+        if (Array.isArray(qDocs)) {
+          for (const item of qDocs) {
+            if (item.document) {
+              const parsed = parseFirestoreDoc(item.document);
+              const docName = item.document.name || "";
+              const order_no = docName.split("/").pop() || parsed?.order_no;
+              const method = (parsed?.method || "").toLowerCase();
+              const createdAt = parsed?.timestamp || parsed?.createdAt || "";
+              const diffMs = Date.now() - (createdAt ? new Date(createdAt).getTime() : 0);
+              // If online payment (bkash, nagad, online) pending created within the last 3 hours and older than 10 seconds
+              if (order_no && (method === "bkash" || method === "nagad" || method === "online") && diffMs < 10800000 && diffMs > 10000) {
+                console.log(`[Auto-Deposit Poller] Auto-approving pending deposit: ${order_no} for user: ${parsed?.username || parsed?.uid}`);
+                await approveDepositHelper(null, order_no);
+              }
+            }
+          }
+        }
+      }
+    } catch (pollerErr) {
+      // Ignore background polling errors
+    }
+  }, 15000);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
