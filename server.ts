@@ -1283,47 +1283,6 @@ async function startServer() {
       }
     });
 
-  // Background auto-poller: periodically verifies and approves online pending deposits
-  setInterval(async () => {
-    try {
-      const runQuery = await fetch(`${FIRESTORE_BASE_URL}:runQuery`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          structuredQuery: {
-            from: [{ collectionId: "deposits" }],
-            where: {
-              fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "pending" } }
-            },
-            limit: 25
-          }
-        })
-      });
-      if (runQuery.ok) {
-        const qDocs = await runQuery.json();
-        if (Array.isArray(qDocs)) {
-          for (const item of qDocs) {
-            if (item.document) {
-              const parsed = parseFirestoreDoc(item.document);
-              const docName = item.document.name || "";
-              const order_no = docName.split("/").pop() || parsed?.order_no;
-              const method = (parsed?.method || "").toLowerCase();
-              const createdAt = parsed?.timestamp || parsed?.createdAt || "";
-              const diffMs = Date.now() - (createdAt ? new Date(createdAt).getTime() : 0);
-              // If online payment (bkash, nagad, online) pending created within the last 3 hours and older than 10 seconds
-              if (order_no && (method === "bkash" || method === "nagad" || method === "online") && diffMs < 10800000 && diffMs > 10000) {
-                console.log(`[Auto-Deposit Poller] Auto-approving pending deposit: ${order_no} for user: ${parsed?.username || parsed?.uid}`);
-                await approveDepositHelper(null, order_no);
-              }
-            }
-          }
-        }
-      }
-    } catch (pollerErr) {
-      // Ignore background polling errors
-    }
-  }, 15000);
-
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
