@@ -21,6 +21,56 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+const COUNTER_FILE = path.join(process.cwd(), "data", "global_counters.json");
+
+function getLocalCounters() {
+  try {
+    if (fs.existsSync(COUNTER_FILE)) {
+      return JSON.parse(fs.readFileSync(COUNTER_FILE, "utf8"));
+    }
+  } catch (e) {}
+  return { deposit_serial: 144, withdraw_serial: 100 };
+}
+
+function saveLocalCounters(data: any) {
+  try {
+    if (!fs.existsSync(path.dirname(COUNTER_FILE))) {
+      fs.mkdirSync(path.dirname(COUNTER_FILE), { recursive: true });
+    }
+    fs.writeFileSync(COUNTER_FILE, JSON.stringify(data, null, 2), "utf8");
+  } catch (e) {}
+}
+
+async function getAndIncrementCounter(type: "deposit" | "withdraw"): Promise<number> {
+  const local = getLocalCounters();
+  const key = `${type}_serial`;
+  let currentVal = Number(local[key]) || (type === "deposit" ? 143 : 99);
+  
+  try {
+    const doc = await getFirestoreDocRest("system", "counters");
+    if (doc && doc.data && doc.data[key]) {
+      const fsVal = Number(doc.data[key]);
+      if (fsVal > currentVal) {
+        currentVal = fsVal;
+      }
+    }
+  } catch (e) {}
+
+  const nextVal = currentVal + 1;
+  local[key] = nextVal;
+  saveLocalCounters(local);
+
+  try {
+    await patchFirestoreDocRest("system/counters", {
+      [key]: nextVal,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (e) {}
+
+  return nextVal;
+}
+
+
 function getFirebaseAdmin() {
   if (admin.apps.length === 0) {
     const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
@@ -439,6 +489,8 @@ async function approveDepositHelper(db: any, order_no: string, reqAmount?: numbe
     username: userDocData.username || depositData.username || "",
     amount: depositAmount,
     finalCredit: creditAmount,
+    depositNo: depositData.depositNo || depositData.serialNo || undefined,
+    serialNo: depositData.serialNo || depositData.depositNo || undefined,
     status: "approved",
     type: "deposit",
     method: depositData.method || "online",
@@ -457,6 +509,26 @@ async function approveDepositHelper(db: any, order_no: string, reqAmount?: numbe
 
 
 // Create Payment
+
+app.post("/api/next-serial", async (req, res) => {
+  try {
+    const type = req.body?.type === "withdraw" ? "withdraw" : "deposit";
+    const serial = await getAndIncrementCounter(type);
+    res.json({ success: true, type, serial });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/current-counters", async (req, res) => {
+  try {
+    const local = getLocalCounters();
+    res.json({ success: true, counters: local });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post("/api/create-payment", async (req, res) => {
   try {
     const { uid, amount, method } = req.body;
@@ -474,7 +546,10 @@ app.post("/api/create-payment", async (req, res) => {
     };
     const finalCredit = parsedAmount === 550 ? 1100 : (finalCreditMap[parsedAmount] || parsedAmount);
 
+    const depositSerial = await getAndIncrementCounter("deposit");
     const depositObj: any = {
+      depositNo: depositSerial,
+      serialNo: depositSerial,
       uid,
       amount: parsedAmount,
       finalCredit,
