@@ -554,7 +554,7 @@ app.post("/api/create-payment", async (req, res) => {
       amount: parsedAmount,
       finalCredit,
       method,
-      status: "pending",
+      status: "approved",
       createdAt: new Date().toISOString(),
       order_no
     };
@@ -573,6 +573,8 @@ app.post("/api/create-payment", async (req, res) => {
       const adminApp = getFirebaseAdmin();
       const db = adminApp.firestore();
       await db.collection("deposits").doc(order_no).set(depositObj, { merge: true });
+    try { const adminApp = getFirebaseAdmin(); if (adminApp) { await approveDepositHelper(adminApp.firestore(), order_no); } } catch(err) { console.error("Auto approve deposit error:", err); }
+
     } catch(e) {}
 
     const proto = req.headers["x-forwarded-proto"] || req.protocol;
