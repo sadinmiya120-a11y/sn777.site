@@ -132,16 +132,6 @@
           onLoad: function() {}
         };
       } else {
-        // Open Telegram when Live Chat button is clicked, without interfering with Tawk.to
-        window.addEventListener('load', () => {
-          const liveChatBtns = document.querySelectorAll('button[title="Casino Live Chat"]');
-          liveChatBtns.forEach(btn => {
-            btn.addEventListener('click', () => {
-              window.open("https://t.me/sn777top", "_blank");
-            });
-          });
-        });
-
         var Tawk_API = Tawk_API || {};
         var Tawk_LoadStart = new Date();
 

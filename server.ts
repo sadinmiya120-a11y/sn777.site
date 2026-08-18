@@ -159,15 +159,6 @@ app.all("/api/auth-proxy/:host/*", async (req, res) => {
 });
 
 app.get("/", async (req, res, next) => {
-  const order_no = req.query.order_no || req.query.order_id || req.query.ref || req.query.cust_order_id;
-  if (order_no) {
-    try {
-      await approveDepositHelper(null, String(order_no).trim());
-    } catch (e) {
-      console.error("[Root Auto-Approve Error]:", e);
-    }
-    return res.redirect(`/success?order_no=${order_no}`);
-  }
   next();
 });
 
@@ -481,8 +472,21 @@ async function approveDepositHelper(db: any, order_no: string, reqAmount?: numbe
   await patchFirestoreDocRest(`deposits/${finalOrderNo}`, {
     status: "approved",
     approvedAt: new Date().toISOString(),
-    creditedAmount: creditAmount
+    creditedAmount: creditAmount,
+    finalCredit: creditAmount,
+    notified: false
   });
+  if (db) {
+    try {
+      await db.collection("deposits").doc(finalOrderNo).set({
+        status: "approved",
+        approvedAt: new Date().toISOString(),
+        creditedAmount: creditAmount,
+        finalCredit: creditAmount,
+        notified: false
+      }, { merge: true });
+    } catch(e) {}
+  }
 
   await patchFirestoreDocRest(`transactions/${finalOrderNo}`, {
     uid,
@@ -554,7 +558,7 @@ app.post("/api/create-payment", async (req, res) => {
       amount: parsedAmount,
       finalCredit,
       method,
-      status: "approved",
+      status: "pending",
       createdAt: new Date().toISOString(),
       order_no
     };
@@ -573,7 +577,7 @@ app.post("/api/create-payment", async (req, res) => {
       const adminApp = getFirebaseAdmin();
       const db = adminApp.firestore();
       await db.collection("deposits").doc(order_no).set(depositObj, { merge: true });
-    try { const adminApp = getFirebaseAdmin(); if (adminApp) { await approveDepositHelper(adminApp.firestore(), order_no); } } catch(err) { console.error("Auto approve deposit error:", err); }
+    
 
     } catch(e) {}
 
@@ -614,18 +618,6 @@ app.post("/api/verify-payment", async (req, res) => {
       const adminApp = getFirebaseAdmin();
       if (adminApp) db = adminApp.firestore();
     } catch (e) {}
-
-    const result = await approveDepositHelper(db, order_no);
-    if (result.success) {
-      return res.json({
-        success: true,
-        status: "approved",
-        amount: result.amount || 0,
-        finalCredit: result.finalCredit || 0,
-        message: result.message
-      });
-    }
-
     let depositData: any = null;
     const docRest = await getFirestoreDocRest("deposits", String(order_no).trim());
     if (docRest?.data) {
@@ -927,6 +919,8 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
     } catch (e) {}
 
     const results: any[] = [];
+    
+    // Check for approved deposits that user has not been notified of yet
     const runQuery = await fetch(`${FIRESTORE_BASE_URL}:runQuery`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -938,7 +932,7 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
               op: "AND",
               filters: [
                 { fieldFilter: { field: { fieldPath: "uid" }, op: "EQUAL", value: { stringValue: uid } } },
-                { fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "pending" } } }
+                { fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "approved" } } }
               ]
             }
           },
@@ -955,10 +949,28 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
             const parsed = parseFirestoreDoc(item.document);
             const docName = item.document.name || "";
             const order_no = docName.split("/").pop() || parsed?.order_no;
-            const method = (parsed?.method || "").toLowerCase();
-            if (order_no && (method === "bkash" || method === "nagad" || method === "online")) {
-              const appRes = await approveDepositHelper(db, order_no);
-              results.push({ order_no, result: appRes });
+            
+            // Only trigger popup if notified is false or undefined
+            if (parsed && parsed.notified === false) {
+              const finalCredit = Number(parsed.finalCredit) || Number(parsed.creditedAmount) || Number(parsed.amount) || 0;
+              const amount = Number(parsed.amount) || finalCredit;
+              results.push({
+                order_no,
+                result: {
+                  success: true,
+                  status: "approved",
+                  amount,
+                  finalCredit
+                }
+              });
+
+              // Mark as notified in both REST and Admin SDK so popup won't repeat
+              await patchFirestoreDocRest(`deposits/${order_no}`, { notified: true });
+              if (db) {
+                try {
+                  await db.collection("deposits").doc(order_no).update({ notified: true });
+                } catch (e) {}
+              }
             }
           }
         }
@@ -973,7 +985,7 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
   }
 });
 
-// ProPay Callback Handler (Supports both GET and POST, multiple alias endpoints and parameter formats)
+
 const propayCallbackHandler = async (req: express.Request, res: express.Response) => {
   try {
     const payload = { ...(req.body || {}), ...(req.query || {}) };
@@ -981,7 +993,7 @@ const propayCallbackHandler = async (req: express.Request, res: express.Response
     const amount = payload.amount || payload.total_amount || payload.paid_amount || payload.price || payload.sum;
     const status = payload.status || payload.txn_status || payload.state || payload.payment_status || payload.result || payload.code || "success";
 
-    console.log('[ProPay Callback] Received payload on', req.url, payload);
+    console.log("[ProPay Callback] Received payload on", req.url, payload);
 
     let db: any = null;
     try {
@@ -999,17 +1011,34 @@ const propayCallbackHandler = async (req: express.Request, res: express.Response
     } catch(e) {}
 
     if (!order_no) {
-      console.warn('[ProPay] Missing order_no in callback payload:', payload);
+      console.warn("[ProPay] Missing order_no in callback payload:", payload);
       return res.status(200).send("SUCCESS");
     }
 
     order_no = String(order_no).trim();
 
+    // Verify HMAC SHA-256 signature if present
+    const received_signature = String(payload.signature || req.headers["x-signature"] || req.headers["signature"] || "").trim();
+    const apiKey = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
+    const formatted_amount = parseFloat(String(amount || "0"));
+    const expected_signature = crypto
+      .createHmac("sha256", apiKey)
+      .update(`${order_no}${formatted_amount}`)
+      .digest("hex");
+
+    if (received_signature) {
+      if (received_signature.toLowerCase() !== expected_signature.toLowerCase()) {
+        console.warn(`[ProPay Callback] Invalid signature: received ${received_signature}, expected ${expected_signature}`);
+        return res.status(403).send("Invalid Signature");
+      }
+      console.log(`[ProPay Callback] Signature HMAC-SHA256 verified successfully for order ${order_no}!`);
+    }
+
     const statusStr = String(status).toLowerCase();
-    const isCancelled = ['cancel', 'cancelled', 'fail', 'failed', 'rejected', '0'].includes(statusStr);
+    const isCancelled = ["cancel", "cancelled", "fail", "failed", "rejected", "0"].includes(statusStr);
 
     if (isCancelled) {
-      console.log('[ProPay Callback] Payment status is failed/cancelled:', statusStr);
+      console.log("[ProPay Callback] Payment status is failed/cancelled:", statusStr);
       try {
         await patchFirestoreDocRest(`deposits/${order_no}`, { status: "cancelled", updatedAt: new Date().toISOString() });
         await patchFirestoreDocRest(`transactions/${order_no}`, { status: "cancelled", updatedAt: new Date().toISOString() });
@@ -1019,11 +1048,11 @@ const propayCallbackHandler = async (req: express.Request, res: express.Response
 
     // Approve the deposit automatically
     const result = await approveDepositHelper(db, order_no, Number(amount) || undefined);
-    console.log('[ProPay Callback] Approval result for order', order_no, result);
+    console.log("[ProPay Callback] Approval result for order", order_no, result);
 
     return res.status(200).send("SUCCESS");
   } catch (err: any) {
-    console.error('[ProPay Callback Error]:', err);
+    console.error("[ProPay Callback Error]:", err);
     return res.status(200).send("SUCCESS");
   }
 };
@@ -1036,26 +1065,17 @@ app.all("/api/ipn", upload.none(), propayCallbackHandler);
 app.all("/propay-callback", upload.none(), propayCallbackHandler);
 app.all("/payment-callback", upload.none(), propayCallbackHandler);
 app.all("/callback", upload.none(), propayCallbackHandler);
+app.all("/callback.php", upload.none(), propayCallbackHandler);
+app.all("/api/callback.php", upload.none(), propayCallbackHandler);
 
 app.all("/api/*", (req, res) => {
   res.status(404).json({ error: `API route ${req.method} ${req.url} not found` });
 });
 
-app.all("/success", async (req, res) => {
+app.all(["/success", "/success.php"], async (req, res) => {
   const payload = { ...(req.query || {}), ...(req.body || {}) };
   const order_no = payload.order_no || payload.order_id || payload.ref || payload.cust_order_id || payload.reference;
-  if (order_no) {
-    try {
-      let db: any = null;
-      try {
-        const adminApp = getFirebaseAdmin();
-        if (adminApp) db = adminApp.firestore();
-      } catch (e) {}
-      await approveDepositHelper(db, String(order_no).trim());
-    } catch (e) {
-      console.error("/success auto-approve error:", e);
-    }
-  }
+  // Order verification is handled securely via payment gateway webhook
 
   res.send(`
   <!DOCTYPE html>
