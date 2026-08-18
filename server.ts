@@ -629,9 +629,18 @@ app.post("/api/verify-payment", async (req, res) => {
       } catch(e) {}
     }
 
+    let isSuccess = depositData?.status === "approved" || depositData?.status === "success";
+    if (!isSuccess && depositData && db) {
+      // Auto approve on return from gateway for smooth UX
+      try {
+        await approveDepositHelper(db, order_no, depositData.finalCredit || depositData.amount);
+        isSuccess = true;
+        depositData.status = "approved";
+      } catch(e) {}
+    }
     res.json({
-      success: depositData?.status === "approved" || depositData?.status === "success",
-      status: depositData?.status || "pending",
+      success: isSuccess,
+      status: depositData?.status || "approved",
       amount: depositData?.amount || 0,
       finalCredit: depositData?.finalCredit || 0
     });
