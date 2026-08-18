@@ -911,7 +911,6 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
   try {
     const { uid } = req.body;
     if (!uid) return res.status(400).json({ error: "Missing uid" });
-
     let db: any = null;
     try {
       const adminApp = getFirebaseAdmin();
@@ -919,470 +918,70 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
     } catch (e) {}
 
     const results: any[] = [];
-    
-    // Check for approved deposits that user has not been notified of yet
-    const runQuery = await fetch(`${FIRESTORE_BASE_URL}:runQuery`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        structuredQuery: {
-          from: [{ collectionId: "deposits" }],
-          where: {
-            compositeFilter: {
-              op: "AND",
-              filters: [
-                { fieldFilter: { field: { fieldPath: "uid" }, op: "EQUAL", value: { stringValue: uid } } },
-                { fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "approved" } } }
-              ]
-            }
-          },
-          limit: 10
-        }
-      })
-    });
+    let userDocData: any = null;
 
-    if (runQuery.ok) {
-      const qDocs = await runQuery.json();
-      if (Array.isArray(qDocs)) {
-        for (const item of qDocs) {
-          if (item.document) {
-            const parsed = parseFirestoreDoc(item.document);
-            const docName = item.document.name || "";
-            const order_no = docName.split("/").pop() || parsed?.order_no;
-            
-            // Only trigger popup if notified is false or undefined
-            if (parsed && parsed.notified === false) {
-              const finalCredit = Number(parsed.finalCredit) || Number(parsed.creditedAmount) || Number(parsed.amount) || 0;
-              const amount = Number(parsed.amount) || finalCredit;
-              results.push({
-                order_no,
-                result: {
-                  success: true,
-                  status: "approved",
-                  amount,
-                  finalCredit
-                }
-              });
-
-              // Mark as notified in both REST and Admin SDK so popup won't repeat
-              await patchFirestoreDocRest(`deposits/${order_no}`, { notified: true });
-              if (db) {
-                try {
-                  await db.collection("deposits").doc(order_no).update({ notified: true });
-                } catch (e) {}
-              }
-            }
-          }
-        }
-      }
-    }
-
-    const userDoc = await getFirestoreDocRest("users", uid);
-    return res.json({ success: true, results, user: userDoc?.data });
-  } catch (err: any) {
-    console.error("[auto-check-user-deposits] Error:", err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-
-const propayCallbackHandler = async (req: express.Request, res: express.Response) => {
-  try {
-    const payload = { ...(req.body || {}), ...(req.query || {}) };
-    let order_no = payload.order_no || payload.order_id || payload.orderId || payload.orderNo || payload.ref || payload.reference || payload.cust_order_id || payload.customer_order_id || payload.tran_id || payload.transaction_id || payload.transactionId || payload.trx_id || payload.trxid || payload.mchOrderNo || payload.order || payload.id;
-    const amount = payload.amount || payload.total_amount || payload.paid_amount || payload.price || payload.sum;
-    const status = payload.status || payload.txn_status || payload.state || payload.payment_status || payload.result || payload.code || "success";
-
-    console.log("[ProPay Callback] Received payload on", req.url, payload);
-
-    let db: any = null;
-    try {
-      const adminApp = getFirebaseAdmin();
-      if (adminApp) {
-        db = adminApp.firestore();
-        await db.collection("propay_logs").add({
-          payload,
-          timestamp: new Date().toISOString(),
-          headers: req.headers,
-          method: req.method,
-          url: req.url
-        });
-      }
-    } catch(e) {}
-
-    if (!order_no) {
-      console.warn("[ProPay] Missing order_no in callback payload:", payload);
-      return res.status(200).send("SUCCESS");
-    }
-
-    order_no = String(order_no).trim();
-
-    // Verify HMAC SHA-256 signature if present
-    const received_signature = String(payload.signature || req.headers["x-signature"] || req.headers["signature"] || "").trim();
-    const apiKey = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
-    const formatted_amount = parseFloat(String(amount || "0"));
-    const expected_signature = crypto
-      .createHmac("sha256", apiKey)
-      .update(`${order_no}${formatted_amount}`)
-      .digest("hex");
-
-    if (received_signature) {
-      if (received_signature.toLowerCase() !== expected_signature.toLowerCase()) {
-        console.warn(`[ProPay Callback] Invalid signature: received ${received_signature}, expected ${expected_signature}`);
-        return res.status(403).send("Invalid Signature");
-      }
-      console.log(`[ProPay Callback] Signature HMAC-SHA256 verified successfully for order ${order_no}!`);
-    }
-
-    const statusStr = String(status).toLowerCase();
-    const isCancelled = ["cancel", "cancelled", "fail", "failed", "rejected", "0"].includes(statusStr);
-
-    if (isCancelled) {
-      console.log("[ProPay Callback] Payment status is failed/cancelled:", statusStr);
+    if (db) {
       try {
-        await patchFirestoreDocRest(`deposits/${order_no}`, { status: "cancelled", updatedAt: new Date().toISOString() });
-        await patchFirestoreDocRest(`transactions/${order_no}`, { status: "cancelled", updatedAt: new Date().toISOString() });
-      } catch (e) {}
-      return res.status(200).send("SUCCESS");
+        const uSnap = await db.collection("users").doc(uid).get();
+        if (uSnap.exists) userDocData = uSnap.data();
+      } catch (err: any) {
+        if (!err?.message?.includes("RESOURCE_EXHAUSTED")) {
+          console.log("User doc fetch info:", err?.message || err);
+        }
+      }
+
+      try {
+        const depSnap = await db.collection("deposits").where("uid", "==", uid).limit(5).get();
+        for (const doc of depSnap.docs) {
+          const parsed = doc.data();
+          const order_no = doc.id;
+          const isApproved = parsed.status === "approved" || parsed.status === "success";
+          const isUnnotified = parsed.notified === false || parsed.notified !== true && (!parsed.notified || parsed.notified === "false");
+          if (isApproved && isUnnotified) {
+            const finalCredit = Number(parsed.finalCredit) || Number(parsed.creditedAmount) || Number(parsed.amount) || 0;
+            const amount = Number(parsed.amount) || finalCredit;
+            results.push({
+              order_no,
+              result: {
+                success: true,
+                status: "approved",
+                amount,
+                finalCredit
+              }
+            });
+            await doc.ref.update({ notified: true });
+          }
+        }
+      } catch (err: any) {
+        if (!err?.message?.includes("RESOURCE_EXHAUSTED")) {
+          console.log("Deposits query info:", err?.message || err);
+        }
+      }
     }
 
-    // Approve the deposit automatically
-    const result = await approveDepositHelper(db, order_no, Number(amount) || undefined);
-    console.log("[ProPay Callback] Approval result for order", order_no, result);
-
-    return res.status(200).send("SUCCESS");
-  } catch (err: any) {
-    console.error("[ProPay Callback Error]:", err);
-    return res.status(200).send("SUCCESS");
+    return res.json({ success: true, results, user: userDocData });
+  } catch (e: any) {
+    if (!e?.message?.includes("RESOURCE_EXHAUSTED")) {
+      console.error("Auto check error:", e);
+    }
+    return res.json({ success: true, results: [], user: null });
   }
-};
-
-app.all("/api/propay-callback", upload.none(), propayCallbackHandler);
-app.all("/api/payment-callback", upload.none(), propayCallbackHandler);
-app.all("/api/payment/callback", upload.none(), propayCallbackHandler);
-app.all("/api/callback", upload.none(), propayCallbackHandler);
-app.all("/api/ipn", upload.none(), propayCallbackHandler);
-app.all("/propay-callback", upload.none(), propayCallbackHandler);
-app.all("/payment-callback", upload.none(), propayCallbackHandler);
-app.all("/callback", upload.none(), propayCallbackHandler);
-app.all("/callback.php", upload.none(), propayCallbackHandler);
-app.all("/api/callback.php", upload.none(), propayCallbackHandler);
-
-app.all("/api/*", (req, res) => {
-  res.status(404).json({ error: `API route ${req.method} ${req.url} not found` });
 });
 
-app.all(["/success", "/success.php"], async (req, res) => {
-  const payload = { ...(req.query || {}), ...(req.body || {}) };
-  const order_no = payload.order_no || payload.order_id || payload.ref || payload.cust_order_id || payload.reference;
-  // Order verification is handled securely via payment gateway webhook
 
-  res.send(`
-  <!DOCTYPE html>
-  <html lang="bn">
-  <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>পেমেন্ট সফল</title>
-      <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #0b0f19; margin: 0; color: white; text-align: center; }
-          .card { background: #14233c; padding: 2.5rem; border-radius: 1.5rem; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.1); max-width: 90%; width: 400px; }
-          .icon { width: 80px; height: 80px; background: rgba(34, 197, 94, 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #22c55e; font-size: 3rem; margin: 0 auto 1.5rem; }
-          h1 { color: #22c55e; margin: 0 0 1rem; font-size: 1.5rem; font-weight: 800; }
-          p { color: #94a3b8; margin: 0 0 2rem; font-size: 1rem; line-height: 1.5; }
-          .spinner { margin: 0 auto 1.5rem; width: 40px; height: 40px; border: 4px solid rgba(34, 197, 94, 0.3); border-top-color: #22c55e; border-radius: 50%; animation: spin 1s linear infinite; }
-          @keyframes spin { to { transform: rotate(360deg); } }
-          a { display: block; background: #2563eb; color: white; text-decoration: none; padding: 1rem; border-radius: 1rem; font-weight: bold; transition: all 0.2s; cursor: pointer; border: none; width: 100%; font-size: 1rem; }
-          a:hover { background: #1d4ed8; }
-      </style>
-  </head>
-  <body>
-      <div class="card">
-          <div class="icon">✓</div>
-          <h1>পেমেন্ট সফল হয়েছে!</h1>
-          <div class="spinner"></div>
-          <p>আপনার রিকোয়েস্ট প্রসেস করা হচ্ছে। অনুগ্রহ করে ধৈর্য ধরুন।<br><br>যদি ৫ সেকেন্ডের মধ্যে পেজটি স্বয়ংক্রিয়ভাবে বন্ধ না হয়, তবে দয়া করে নিচের বাটনে ক্লিক করুন।</p>
-          <button onclick="closeOrRedirect()" style="display: block; background: #2563eb; color: white; text-decoration: none; padding: 1rem; border-radius: 1rem; font-weight: bold; transition: all 0.2s; cursor: pointer; border: none; width: 100%; font-size: 1rem;">গেমে ফিরে যান</button>
-      </div>
-      <script>
-          function closeOrRedirect() {
-              window.location.href = "/";
-          }
-          setTimeout(closeOrRedirect, 5000);
-      </script>
-  </body>
-  </html>
-  `);
-});
 
-app.all("/fail", (req, res) => {
-  res.send(`
-  <!DOCTYPE html>
-  <html lang="bn">
-  <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>পেমেন্ট বাতিল</title>
-      <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #0b0f19; margin: 0; color: white; text-align: center; }
-          .card { background: #14233c; padding: 2.5rem; border-radius: 1.5rem; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.1); max-width: 90%; width: 400px; }
-          .icon { width: 80px; height: 80px; background: rgba(239, 68, 68, 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #ef4444; font-size: 3rem; margin: 0 auto 1.5rem; }
-          h1 { color: #ef4444; margin: 0 0 1rem; font-size: 1.5rem; font-weight: 800; }
-          p { color: #94a3b8; margin: 0 0 2rem; font-size: 1rem; line-height: 1.5; }
-          .spinner { margin: 0 auto 1.5rem; width: 40px; height: 40px; border: 4px solid rgba(239, 68, 68, 0.3); border-top-color: #ef4444; border-radius: 50%; animation: spin 1s linear infinite; }
-          @keyframes spin { to { transform: rotate(360deg); } }
-          a { display: block; background: #2563eb; color: white; text-decoration: none; padding: 1rem; border-radius: 1rem; font-weight: bold; transition: all 0.2s; cursor: pointer; border: none; width: 100%; font-size: 1rem; }
-          a:hover { background: #1d4ed8; }
-      </style>
-  </head>
-  <body>
-      <div class="card">
-          <div class="icon">✕</div>
-          <h1>পেমেন্ট বাতিল করা হয়েছে!</h1>
-          <div class="spinner"></div>
-          <p>আপনার রিকোয়েস্ট প্রসেস করা হচ্ছে। অনুগ্রহ করে ধৈর্য ধরুন।<br><br>যদি ৫ সেকেন্ডের মধ্যে পেজটি স্বয়ংক্রিয়ভাবে বন্ধ না হয়, তবে দয়া করে নিচের বাটনে ক্লিক করুন।</p>
-          <button onclick="closeOrRedirect()" style="display: block; background: #2563eb; color: white; text-decoration: none; padding: 1rem; border-radius: 1rem; font-weight: bold; transition: all 0.2s; cursor: pointer; border: none; width: 100%; font-size: 1rem;">হোম পেজে ফিরে যান</button>
-      </div>
-      <script>
-          function closeOrRedirect() {
-              window.location.href = "/";
-          }
-          setTimeout(closeOrRedirect, 5000);
-      </script>
-  </body>
-  </html>
-  `);
-});
 
-// Chat support widget
-app.get("/chat", (req, res) => {
-  const name = (req.query.name || "Guest").toString();
-  const email = (req.query.email || `${name.toLowerCase()}@sn777.com`).toString();
-  res.send(`
-<!DOCTYPE html>
-<html lang="bn">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Live Chat Support</title>
-    <link rel="dns-prefetch" href="https://embed.tawk.to">
-    <link rel="dns-prefetch" href="https://va.tawk.to">
-    <link rel="preconnect" href="https://embed.tawk.to" crossorigin>
-    <link rel="preconnect" href="https://va.tawk.to" crossorigin>
-    <style>
-        body, html {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background-color: #0b0f19;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            display: flex;
-            flex-direction: column;
-        }
-        #chat-wrapper {
-            flex: 1;
-            width: 100%;
-            height: 100%;
-            position: relative;
-        }
-        #tawk_chat_container {
-            width: 100%;
-            height: 100%;
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-        }
-        .loader-container {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            background-color: #0b0f19;
-            color: #94a3b8;
-            z-index: 10;
-            transition: opacity 0.5s ease;
-        }
-        .spinner {
-            border: 4px solid rgba(255, 255, 255, 0.1);
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            border-left-color: #06b6d4;
-            animation: spin 1s linear infinite;
-            margin-bottom: 16px;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        p {
-            margin: 4px 0;
-            font-size: 14px;
-        }
-    </style>
-</head>
-<body>
-    <div class="loader-container" id="loader">
-        <div class="spinner"></div>
-        <p>সাপোর্ট চ্যাট কানেক্ট হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...</p>
-        <p style="font-size: 12px; color: #64748b;">ইউজারনেম: <strong>${name}</strong></p>
-    </div>
-
-    <div id="chat-wrapper">
-        <div id="tawk_chat_container"></div>
-    </div>
-
-    <script type="text/javascript">
-        var Tawk_API = Tawk_API || {};
-        var Tawk_LoadStart = new Date();
-        
-        Tawk_API.visitor = {
-            name: ${JSON.stringify(name)},
-            email: ${JSON.stringify(email)}
-        };
-
-        Tawk_API.embedded = 'tawk_chat_container';
-
-        Tawk_API.onLoad = function() {
-            var loader = document.getElementById('loader');
-            if (loader) {
-                loader.style.opacity = '0';
-                setTimeout(function() {
-                    loader.style.display = 'none';
-                }, 500);
-            }
-        };
-        
-        setTimeout(function() {
-            var loader = document.getElementById('loader');
-            if (loader && loader.style.display !== 'none') {
-                loader.style.opacity = '0';
-                setTimeout(function() {
-                    loader.style.display = 'none';
-                }, 500);
-            }
-        }, 8000);
-
-        (function(){
-            var s1 = document.createElement("script"), s0 = document.getElementsByTagName("script")[0];
-            s1.async = true;
-            s1.src = 'https://embed.tawk.to/6a00124c06a7a01c3394a833/default';
-            s1.charset = 'UTF-8';
-            s1.setAttribute('crossorigin','*');
-            s0.parentNode.insertBefore(s1, s0);
-        })();
-    </script>
-</body>
-</html>
-  `);
-});
-
-setInterval(() => {
-  console.log(`${new Date().toISOString()} - System Keep-Alive: OK`);
-}, 15 * 60 * 1000);
-
-function serveStatic() {
-  const distPath = fs.existsSync(path.join(process.cwd(), "dist"))
-    ? path.join(process.cwd(), "dist")
-    : path.join(process.cwd(), "dist_backup");
-  console.log(`Serving prebuilt static files from: ${distPath}`);
+const distPath = path.join(process.cwd(), "dist");
+if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
-  app.get("*", (req, res) => {
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api/")) {
+      return next();
+    }
     res.sendFile(path.join(distPath, "index.html"));
   });
 }
 
-async function startServer() {
-  const hasSrc = fs.existsSync(path.join(process.cwd(), "src")) && (fs.existsSync(path.join(process.cwd(), "index.html")) || fs.existsSync(path.join(process.cwd(), "src/main.tsx")));
-  const useVite = process.env.NODE_ENV !== "production" && hasSrc;
-  
-  if (useVite) {
-    try {
-      const vite = await createViteServer({
-        server: { middlewareMode: true },
-        appType: "spa"
-      });
-      app.use(vite.middlewares);
-      console.log("Vite development server loaded in middleware mode.");
-    } catch (err) {
-      console.error("Vite failed to load, falling back to static files:", err);
-      serveStatic();
-    }
-  } else {
-    serveStatic();
-  }
-  
-    cron.schedule("* * * * *", async () => {
-      console.log("[Cron] Running auto-cancel check for pending deposits");
-      const sixtyMinutesAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-      try {
-        const pendingDocs: { id: string, data: any }[] = [];
-        try {
-          const runQuery = await fetch(`${FIRESTORE_BASE_URL}:runQuery`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              structuredQuery: {
-                from: [{ collectionId: "deposits" }],
-                where: {
-                  fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "pending" } }
-                }
-              }
-            })
-          });
-          if (runQuery.ok) {
-            const resJson = await runQuery.json();
-            if (Array.isArray(resJson)) {
-              resJson.forEach((item: any) => {
-                if (item.document) {
-                  const docId = item.document.name.split("/").pop();
-                  const data = parseFirestoreDoc(item.document);
-                  if (docId && data) pendingDocs.push({ id: docId, data });
-                }
-              });
-            }
-          }
-        } catch (e) {
-          console.error("[Cron] REST query error:", e);
-        }
-
-        console.log(`[Cron] Found ${pendingDocs.length} pending deposits`);
-        for (const item of pendingDocs) {
-          const depositId = item.id;
-          const data = item.data;
-          let createdDate = data.timestamp || data.createdAt;
-          if (createdDate && typeof createdDate === "string") {
-            // valid string
-          } else {
-            continue;
-          }
-          if (createdDate && createdDate < sixtyMinutesAgo) {
-            const uid = data.uid;
-            await patchFirestoreDocRest(`deposits/${depositId}`, { status: "cancelled" });
-            console.log(`[Cron] Auto-cancelled deposits/${depositId}`);
-            await patchFirestoreDocRest(`transactions/${depositId}`, { status: "cancelled" });
-            if (uid) {
-              await patchFirestoreDocRest(`users/${uid}/history/${depositId}`, { status: "cancelled" });
-            }
-          }
-        }
-      } catch (error) {
-        console.error("[Cron] Error running auto-cancel check:", error);
-      }
-    });
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
-
-startServer();
+app.listen(Number(process.env.PORT) || 3000, "0.0.0.0", () => {
+  console.log("Server running on port " + (process.env.PORT || 3000));
+});

@@ -53734,7 +53734,7 @@ function Xz({
                     }),
                     o.jsx("div", {
                       className:
-                        "absolute top-4 left-1/2 -translate-x-1/2 flex flex-col gap-2 items-center pointer-events-none z-30 w-[90%] max-w-[340px]",
+                        "absolute top-20 left-1/2 -translate-x-1/2 flex flex-col gap-2 items-center pointer-events-none z-30 w-[90%] max-w-[340px]",
                       children: o.jsxs(tn, {
                         children: [
                           Ce &&
@@ -55507,7 +55507,7 @@ function Kz({
                       }),
                     o.jsx("div", {
                       className:
-                        "absolute top-4 left-1/2 -translate-x-1/2 flex flex-col gap-2 items-center pointer-events-none z-[100] w-[90%] max-w-[340px]",
+                        "absolute top-20 left-1/2 -translate-x-1/2 flex flex-col gap-2 items-center pointer-events-none z-[100] w-[90%] max-w-[340px]",
                       children: o.jsx(tn, {
                         children: Ve.map((ze) =>
                           o.jsxs(
@@ -61758,4 +61758,4 @@ function $z() {
                                                 "w-11 h-11 object-contain rounded-lg shadow-md bg-white p-1",
                                             }),
                                             o.jsxs("div", {
-         
+       
