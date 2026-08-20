@@ -249,36 +249,81 @@ app.post("/api/record-transaction", async (req, res) => {
   }
 });
 
-// Endpoint to fetch user transactions with resilient fallback
+// Endpoint to fetch user transactions with resilient fallback across transactions, withdrawals, deposits, history
 app.get("/api/user-transactions", async (req, res) => {
   try {
     const uid = String(req.query.uid || "").trim();
     if (!uid) return res.status(400).json({ error: "Missing uid" });
-
     const localList = getLocalTransactions().filter((t: any) => t.uid === uid);
-
     let firestoreList: any[] = [];
     try {
       const adminApp = getFirebaseAdmin();
       if (adminApp) {
         const db = adminApp.firestore();
-        const snap = await db.collection("transactions").where("uid", "==", uid).limit(100).get();
-        firestoreList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      }
-    } catch (fbErr: any) {}
+        const [txSnap, wthSnap, depSnap, histSnap] = await Promise.all([
+          db.collection("transactions").where("uid", "==", uid).limit(100).get().catch(() => ({ docs: [] })),
+          db.collection("withdrawals").where("uid", "==", uid).limit(100).get().catch(() => ({ docs: [] })),
+          db.collection("deposits").where("uid", "==", uid).limit(100).get().catch(() => ({ docs: [] })),
+          db.collection("users").doc(uid).collection("history").limit(100).get().catch(() => ({ docs: [] })),
+        ]);
 
+        txSnap.docs.forEach((d: any) => firestoreList.push({ id: d.id, ...d.data() }));
+        wthSnap.docs.forEach((d: any) => {
+          const data = d.data();
+          firestoreList.push({
+            id: d.id,
+            type: "withdraw",
+            status: data.status || "pending",
+            amount: Number(data.amount || 0),
+            displayAmount: Number(data.amount || 0),
+            method: data.method || data.bankName || "bank",
+            bankName: data.bankName || data.method,
+            accountNumber: data.accountNumber || data.phone,
+            accountHolder: data.accountHolder || data.username,
+            timestamp: data.timestamp || data.createdAt || new Date().toISOString(),
+            withdrawNo: data.withdrawNo || data.serialNo,
+            serialNo: data.serialNo || data.withdrawNo,
+            description: data.description || ("উইথড্র রিকোয়েস্ট (" + (data.status || "পেন্ডিং") + ")"),
+            ...data
+          });
+        });
+        depSnap.docs.forEach((d: any) => {
+          const data = d.data();
+          firestoreList.push({
+            id: d.id,
+            type: "deposit",
+            status: data.status || "pending",
+            amount: Number(data.amount || 0),
+            displayAmount: Number(data.amount || 0),
+            method: data.method || "bkash",
+            timestamp: data.timestamp || data.createdAt || new Date().toISOString(),
+            depositNo: data.depositNo || data.serialNo,
+            serialNo: data.serialNo || data.depositNo,
+            description: data.description || ("ডিপোজিট রিকোয়েস্ট " + (data.amount || "") + " টাকা"),
+            ...data
+          });
+        });
+        histSnap.docs.forEach((d: any) => {
+          const data = d.data();
+          firestoreList.push({
+            id: d.id,
+            ...data
+          });
+        });
+      }
+    } catch (fbErr: any) {
+      console.warn("Error reading from firestore collections:", fbErr);
+    }
     const map = new Map<string, any>();
     for (const item of [...firestoreList, ...localList]) {
       const key = String(item.id || item.order_no || item.depositNo || item.withdrawNo || (item.timestamp + "_" + item.amount));
       map.set(key, { ...map.get(key), ...item });
     }
-
     const merged = Array.from(map.values()).sort((a, b) => {
       const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
       const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
       return timeB - timeA;
     });
-
     return res.json({ transactions: merged });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
