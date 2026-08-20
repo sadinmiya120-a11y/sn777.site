@@ -187,12 +187,111 @@ app.post("/api/update-username", async (req, res) => {
 
 
 // --- ProPay Integration ---
+
+const TX_STORE_FILE = path.join(process.cwd(), "data", "transactions_store.json");
+
+function getLocalTransactions(): any[] {
+  try {
+    if (fs.existsSync(TX_STORE_FILE)) {
+      return JSON.parse(fs.readFileSync(TX_STORE_FILE, "utf8")) || [];
+    }
+  } catch (e) {}
+  return [];
+}
+
+function saveLocalTransaction(tx: any) {
+  try {
+    const list = getLocalTransactions();
+    const docKey = tx.id || tx.order_no || tx.depositNo || tx.withdrawNo || (tx.timestamp + "_" + tx.amount);
+    const idx = list.findIndex((item: any) => {
+      const k = item.id || item.order_no || item.depositNo || item.withdrawNo || (item.timestamp + "_" + item.amount);
+      return k === docKey || (tx.order_no && item.order_no === tx.order_no);
+    });
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...tx, updatedAt: new Date().toISOString() };
+    } else {
+      list.unshift({ ...tx, createdAt: tx.createdAt || tx.timestamp || new Date().toISOString() });
+    }
+    const trimmed = list.slice(0, 1000);
+    fs.writeFileSync(TX_STORE_FILE, JSON.stringify(trimmed, null, 2), "utf8");
+  } catch (e) {
+    console.warn("Failed to save local transaction:", e);
+  }
+}
+
+
+// Endpoint to record transaction persistently
+app.post("/api/record-transaction", async (req, res) => {
+  try {
+    const tx = req.body;
+    if (!tx || !tx.uid) {
+      return res.status(400).json({ error: "Missing tx data or uid" });
+    }
+    saveLocalTransaction(tx);
+
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) {
+        const db = adminApp.firestore();
+        const docId = tx.id || tx.order_no || tx.depositNo || tx.withdrawNo || ("tx_" + Date.now());
+        await db.collection("transactions").doc(String(docId)).set(tx, { merge: true });
+        if (tx.type === "deposit") {
+          await db.collection("deposits").doc(String(docId)).set(tx, { merge: true });
+        } else if (tx.type === "withdraw") {
+          await db.collection("withdrawals").doc(String(docId)).set(tx, { merge: true });
+        }
+      }
+    } catch (fbErr: any) {}
+
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint to fetch user transactions with resilient fallback
+app.get("/api/user-transactions", async (req, res) => {
+  try {
+    const uid = String(req.query.uid || "").trim();
+    if (!uid) return res.status(400).json({ error: "Missing uid" });
+
+    const localList = getLocalTransactions().filter((t: any) => t.uid === uid);
+
+    let firestoreList: any[] = [];
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) {
+        const db = adminApp.firestore();
+        const snap = await db.collection("transactions").where("uid", "==", uid).limit(100).get();
+        firestoreList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      }
+    } catch (fbErr: any) {}
+
+    const map = new Map<string, any>();
+    for (const item of [...firestoreList, ...localList]) {
+      const key = String(item.id || item.order_no || item.depositNo || item.withdrawNo || (item.timestamp + "_" + item.amount));
+      map.set(key, { ...map.get(key), ...item });
+    }
+
+    const merged = Array.from(map.values()).sort((a, b) => {
+      const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
+      const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
+      return timeB - timeA;
+    });
+
+    return res.json({ transactions: merged });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/create-payment", async (req, res) => {
   try {
     const { uid, amount, method } = req.body;
     if (!uid || !amount || !method) return res.status(400).json({ error: "Missing parameters" });
 
     const order_no = 'ORD-' + Date.now();
+    saveLocalTransaction({ id: order_no, order_no, uid, amount: parseFloat(amount), method, type: 'deposit', status: 'pending', createdAt: new Date().toISOString() });
     const adminApp = getFirebaseAdmin();
     const db = adminApp.firestore();
 
@@ -519,10 +618,8 @@ app.post(["/api/callback", "/api/propay-callback", "/callback.php"], async (req,
                             updatedAt: new Date().toISOString()
                         });
 
-                        transaction.update(transactionRef, {
-                            status: 'approved',
-                            updatedAt: new Date().toISOString()
-                        });
+                        saveLocalTransaction({ id: order_no, order_no, uid, status: 'approved', amount: amountToCredit, finalCredit: Number(depData?.finalCredit || amountToCredit), type: 'deposit', updatedAt: new Date().toISOString() });
+                        transaction.set(transactionRef, { status: 'approved', updatedAt: new Date().toISOString() }, { merge: true });
 
                         // Update user history subcollection
                         const userHistoryRef = db.collection('users').doc(uid).collection('history').doc(order_no);
@@ -854,63 +951,67 @@ async function startServer() {
     res.status(404).send("index.html not found");
   });
 
-  // Auto-cancel deposits older than 7 minutes
-  cron.schedule('* * * * *', async () => {
-    console.log('[Cron] Running auto-cancel check for pending deposits');
-    const db = getFirebaseAdmin().firestore();
-    const sevenMinutesAgo = new Date(Date.now() - 7 * 60 * 1000).toISOString();
-    
+    // Auto-cancel deposits older than 7 minutes (Quota-aware with cooldown & rate-limiting)
+  let quotaCooldownUntil = 0;
+
+  cron.schedule("*/5 * * * *", async () => {
+    if (Date.now() < quotaCooldownUntil) {
+      return;
+    }
+
     try {
-        const pendingDeposits = await db.collection('deposits')
-            .where('status', '==', 'pending')
-            .get();
-        
-        console.log(`[Cron] Found ${pendingDeposits.docs.length} pending deposits`);
+      const adminApp = getFirebaseAdmin();
+      if (!adminApp) return;
+      const db = adminApp.firestore();
+      if (!db) return;
 
-        for (const doc of pendingDeposits.docs) {
-            const data = doc.data();
-            console.log(`[Cron] Debug: Deposit ${doc.id} status: ${data.status}, timestamp type: ${typeof data.timestamp}`);
-            let createdDate = data.timestamp;
-            if (createdDate && typeof createdDate.toDate === 'function') {
-                createdDate = createdDate.toDate().toISOString();
-            } else if (createdDate && typeof createdDate === 'string') {
-                // Already string, nothing to do
-            } else {
-                console.log(`[Cron] Debug: Deposit ${doc.id} has no valid timestamp`);
-                continue;
+      const sevenMinutesAgo = new Date(Date.now() - 7 * 60 * 1000).toISOString();
+      
+      const pendingDeposits = await db.collection("deposits")
+        .where("status", "==", "pending")
+        .limit(10)
+        .get();
+
+      if (pendingDeposits.empty) return;
+
+      for (const doc of pendingDeposits.docs) {
+        try {
+          const data = doc.data();
+          let createdDate = data.timestamp;
+          if (createdDate && typeof createdDate.toDate === "function") {
+            createdDate = createdDate.toDate().toISOString();
+          } else if (typeof createdDate !== "string") {
+            continue;
+          }
+
+          if (createdDate && createdDate < sevenMinutesAgo) {
+            const depositId = doc.id;
+            const uid = data.uid;
+
+            await doc.ref.update({ status: "cancelled", updatedAt: new Date().toISOString() });
+
+            if (uid) {
+              try {
+                await db.collection("users").doc(uid).collection("history").doc(depositId).update({ status: "cancelled" });
+              } catch (histErr) {}
             }
-            
-            console.log(`[Cron] Deposit ${doc.id} timestamp: ${createdDate}, Threshold: ${sevenMinutesAgo}`);
-
-            if (createdDate && createdDate < sevenMinutesAgo) {
-                const depositId = doc.id;
-                const uid = data.uid;
-
-                // 1. Update deposits document
-                await doc.ref.update({ status: 'cancelled' });
-                console.log(`[Cron] Auto-cancelled deposits/${depositId}`);
-
-                // 2. Update transactions document
-                try {
-                    await db.collection('transactions').doc(depositId).update({ status: 'cancelled' });
-                    console.log(`[Cron] Auto-cancelled transactions/${depositId}`);
-                } catch (txErr: any) {
-                    console.log(`[Cron] Transactions doc ${depositId} could not be updated:`, txErr.message);
-                }
-
-                // 3. Update users/{uid}/history/{depositId} document if uid exists
-                if (uid) {
-                    try {
-                        await db.collection('users').doc(uid).collection('history').doc(depositId).update({ status: 'cancelled' });
-                        console.log(`[Cron] Auto-cancelled users/${uid}/history/${depositId}`);
-                    } catch (histErr: any) {
-                        console.log(`[Cron] History doc for user ${uid}, deposit ${depositId} could not be updated:`, histErr.message);
-                    }
-                }
-            }
+          }
+        } catch (itemErr: any) {
+          const msg = String(itemErr?.message || itemErr);
+          if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("Quota exceeded") || msg.includes("8 RESOURCE_EXHAUSTED")) {
+            throw itemErr;
+          }
         }
-    } catch (error) {
-        console.error('[Cron] Error running auto-cancel check:', error);
+      }
+    } catch (error: any) {
+      const errMsg = String(error?.message || error);
+      if (errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("Quota exceeded") || errMsg.includes("8 RESOURCE_EXHAUSTED")) {
+        // Cooldown for 15 minutes to allow quota replenishment
+        quotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+        console.warn(`[Cron] Firestore quota exceeded. Pausing auto-cancel check for 15 minutes until ${new Date(quotaCooldownUntil).toISOString()}`);
+      } else {
+        console.warn("[Cron] Auto-cancel check warning:", errMsg);
+      }
     }
   });
 
