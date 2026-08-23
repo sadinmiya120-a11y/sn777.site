@@ -574,7 +574,7 @@ app.get("/api/debug-project", (req, res) => {
 });
 
 // ProPay Callback
-app.post(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, res) => {
+app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, res) => {
   console.log(`[ProPay Callback] RAW REQUEST RECEIVED:`, {
       method: req.method,
       url: req.url,
@@ -612,7 +612,12 @@ app.post(["/api/callback", "/api/propay-callback", "/callback.php"], async (req,
         match: received_signature === expected_signature
     });
 
-    if (signature && crypto.timingSafeEqual(Buffer.from(expected_signature), Buffer.from(received_signature))) {
+    const isSigValid = Boolean(
+      signature &&
+      received_signature.length === expected_signature.length &&
+      crypto.timingSafeEqual(Buffer.from(expected_signature, "utf8"), Buffer.from(received_signature, "utf8"))
+    );
+    if (isSigValid) {
         console.log(`[ProPay Callback] Signature VALID for order: ${order_no}`);
         const depositRef = db.collection('deposits').doc(order_no);
         const transactionRef = db.collection('transactions').doc(order_no);
