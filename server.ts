@@ -992,6 +992,9 @@ async function startServer() {
     if (req.path.startsWith("/api/")) {
       return res.status(404).json({ error: "API endpoint not found" });
     }
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     for (const p of possibleDistPaths) {
       const indexPath = path.join(p, "index.html");
       if (fs.existsSync(indexPath)) {
