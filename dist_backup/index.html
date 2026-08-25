@@ -348,9 +348,30 @@
         }
       };
     </script>
-    <script type="module" crossorigin src="/assets/index-sn777-v5.js?v=1787622179267"></script>
+    <script type="module" crossorigin src="/assets/index-sn777-v5.js?v=1787625525019"></script>
 
     <link rel="stylesheet" crossorigin href="/assets/index-C0XgLZC6-v3.css">
+  
+    <script>
+      // Clear old caches & update SW immediately
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for (let registration of registrations) {
+            registration.update();
+          }
+        });
+      }
+      if ("caches" in window) {
+        caches.keys().then(function(names) {
+          for (let name of names) {
+            if (name.includes("v4") || name.includes("v3") || name.includes("v1") || name.includes("v2")) {
+              caches.delete(name);
+            }
+          }
+        });
+      }
+    </script>
+  
   </head>
   <body>
     <div id="root"></div>
