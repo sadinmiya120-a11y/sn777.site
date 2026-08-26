@@ -1,12 +1,13 @@
 <?php
 ob_start();
+// ইউজারের লোকাল ডাটাবেজ ফাইল কানেক্ট করা হলো
 include("../serive/samparka.php"); 
 
 if (!isset($_GET['uid']) || !isset($_GET['amount'])) { die("Illegal access: UID or Amount missing"); }
 
 $uid   = mysqli_real_escape_string($conn, $_GET['uid']);
 $ramt  = (int)$_GET['amount']; 
-$payName = 'NAGAD';
+$payName = 'BKASH';
 $serial = date("Ymd").time().rand(100000,999999);
 $createdate = date("Y-m-d H:i:s");
 
@@ -16,7 +17,7 @@ $u = mysqli_fetch_array($q);
 $mobile = isset($u['mobile']) ? $u['mobile'] : '01700000000';
 
 // ২. ইউজারের সিস্টেমে পেন্ডিং রেকর্ড ইনসার্ট
-mysqli_query($conn, "INSERT INTO thevani (payid, balakedara, motta, dharavahi, mula, ullekha, duravani, ekikrtapavati, dinankavannuracisi, madari, pavatiaidi, sthiti) VALUES ('2', '$uid', '$ramt', '$serial', '$payName', 'N/A', '$mobile', 'NAGAD', '$createdate', '1005', '2', '0')");
+mysqli_query($conn, "INSERT INTO thevani (payid, balakedara, motta, dharavahi, mula, ullekha, duravani, ekikrtapavati, dinankavannuracisi, madari, pavatiaidi, sthiti) VALUES ('2', '$uid', '$ramt', '$serial', '$payName', 'N/A', '$mobile', 'BKASH', '$createdate', '1005', '2', '0')");
 
 /* ================= GOPAY API CONFIG ================= */
 $config = require 'gopayconfig.php';
@@ -34,7 +35,7 @@ $postData = [
     'notify_url'     => $notifyURL,
     'page_url'       => $jumpURL,
     'mch_order_no'   => $serial,
-    'pay_type'       => "2201", // নগদ কোড
+    'pay_type'       => "2202", // বিকাশ কোড
     'trade_amount'   => (string)$ramt,
     'order_date'     => $createdate,
     'goods_name'     => $payName,

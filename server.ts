@@ -573,6 +573,341 @@ app.get("/api/debug-project", (req, res) => {
   }
 });
 
+// GOPay Payment Initiation Route (supports both PHP URL and API URL)
+app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], async (req, res) => {
+  console.log(`[GOPAY PAY] Request received:`, {
+    method: req.method,
+    url: req.url,
+    query: req.query,
+    body: req.body
+  });
+
+  try {
+    const rawData = { ...req.query, ...req.body };
+    const uid = rawData.uid;
+    const amount = parseFloat(rawData.amount || rawData.trade_amount || 0);
+    const rawMethod = String(rawData.method || rawData.goods_name || "nagad").toLowerCase();
+
+    if (!uid || isNaN(amount) || amount <= 0) {
+      console.error("[GOPAY PAY] Missing or invalid UID/Amount:", { uid, amount });
+      return res.status(400).send("<h3>Illegal access: UID or Amount missing</h3>");
+    }
+
+    const host = req.get("host") || "ais-dev-sxllemqiu46rogxyb2cm6w-552213914579.asia-east1.run.app";
+    const proto = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+    const origin = `${proto}://${host}`;
+
+    const serial = String(rawData.order_no || rawData.mch_order_no || (
+      new Date().toISOString().slice(0, 10).replace(/-/g, "") +
+      Math.floor(Date.now() / 1000) +
+      Math.floor(100000 + Math.random() * 900000)
+    ));
+
+    const now = new Date();
+    const createdate = now.toISOString().replace("T", " ").slice(0, 19);
+    const isBkash = rawMethod.includes("bkash");
+    const payName = isBkash ? "BKASH" : "NAGAD";
+    // Primary: 2202 for BKASH, 2201 for NAGAD
+    const payType = isBkash ? "2202" : "2201";
+
+    const notifyURL = `${origin}/pay1/gopay_notify.php`;
+    const jumpURL = `${origin}/#/wallet/RechargeHistory`;
+
+    // 100% bonus for deposit >= 550
+    const finalCredit = amount >= 550 ? amount * 2 : amount;
+
+    // Save pending record in Firestore & Local storage
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) {
+        const db = adminApp.firestore();
+        let phone = "01700000000";
+        let username = "unknown";
+
+        try {
+          const userDoc = await db.collection("users").doc(uid).get();
+          if (userDoc.exists) {
+            const uData = userDoc.data();
+            phone = uData?.phone || phone;
+            username = uData?.username || username;
+          }
+        } catch (e) {}
+
+        const depRecord = {
+          id: serial,
+          order_no: serial,
+          uid,
+          username,
+          phone,
+          amount,
+          finalCredit,
+          method: isBkash ? "bkash" : "nagad",
+          status: "pending",
+          timestamp: createdate,
+          createdAt: createdate,
+          depositNo: serial,
+          serialNo: serial,
+          displayAmount: amount,
+          description: `ডিপোজিট রিকোয়েস্ট ${amount} টাকা (${payName})`
+        };
+
+        saveLocalTransaction(depRecord);
+        await Promise.all([
+          db.collection("deposits").doc(serial).set(depRecord, { merge: true }),
+          db.collection("transactions").doc(serial).set(depRecord, { merge: true }),
+          db.collection("users").doc(uid).collection("history").doc(serial).set(depRecord, { merge: true })
+        ]);
+      }
+    } catch (dbErr) {
+      console.warn("[GOPAY PAY] DB record error:", dbErr);
+    }
+
+    const app_id = "GP_97386700";
+    const secretKey = "87a89555480aae027ad84daf666602d7";
+    const apiUrl = "https://mch.go-pay.cyou/pay.php";
+
+    const candidatePayTypes = ["2201", "2202", "1001", "1002"];
+    let cashierUrl = "";
+    let lastErrorMsg = "FAIL";
+
+    for (const pType of candidatePayTypes) {
+      const postData: Record<string, string> = {
+        version: "1.0",
+        app_id,
+        notify_url: notifyURL,
+        page_url: jumpURL,
+        mch_order_no: serial,
+        pay_type: pType,
+        trade_amount: String(amount),
+        order_date: createdate,
+        goods_name: payName,
+        mch_return_msg: "OK"
+      };
+
+      const sortedKeys = Object.keys(postData).sort();
+      let signStr = "";
+      for (const k of sortedKeys) {
+        const v = postData[k];
+        if (v !== "" && v !== null && v !== undefined) {
+          signStr += `${k}=${v}&`;
+        }
+      }
+      signStr += `key=${secretKey}`;
+      postData.sign = crypto.createHash("md5").update(signStr).digest("hex");
+      postData.sign_type = "MD5";
+
+      try {
+        console.log(`[GOPAY PAY] Attempting gateway with pay_type=${pType}, goods_name=${payName}`);
+        const gopayRes = await fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams(postData).toString()
+        });
+
+        const resJson: any = await gopayRes.json();
+        console.log(`[GOPAY PAY] Gateway response for pay_type=${pType}:`, resJson);
+
+        if (resJson && resJson.respCode === "SUCCESS" && resJson.payInfo) {
+          cashierUrl = resJson.payInfo;
+          break;
+        } else if (resJson?.tradeMsg) {
+          lastErrorMsg = resJson.tradeMsg;
+        }
+      } catch (postErr) {
+        console.warn(`[GOPAY PAY] Gateway attempt failed for ${pType}:`, postErr);
+      }
+    }
+
+    if (cashierUrl) {
+      if (req.headers.accept?.includes("application/json") || req.xhr) {
+        return res.json({ success: true, redirect_url: cashierUrl, payInfo: cashierUrl });
+      }
+      return res.redirect(cashierUrl);
+    } else {
+      return res.status(400).send(`<h3>gopay API ERROR: ${lastErrorMsg}</h3>`);
+    }
+  } catch (err: any) {
+    console.error("[GOPAY PAY Error]:", err);
+    return res.status(500).send(`<h3>Server Error: ${err.message}</h3>`);
+  }
+});
+
+// GOPay Callback / Notify Route
+app.all(["/pay1/gopay_notify.php", "/gopay_notify.php", "/api/gopay-notify"], async (req, res) => {
+  console.log(`[GOPAY NOTIFY] Received callback:`, {
+    method: req.method,
+    url: req.url,
+    body: req.body,
+    query: req.query
+  });
+
+  try {
+    const rawData = req.body && Object.keys(req.body).length > 0 ? req.body : req.query;
+    if (!rawData || Object.keys(rawData).length === 0) {
+      console.error("[GOPAY NOTIFY] ERROR: Empty POST/GET data received.");
+      return res.send("fail");
+    }
+
+    const secret_key = "87a89555480aae027ad84daf666602d7";
+
+    const sign_params = { ...rawData };
+    delete sign_params.sign;
+    delete sign_params.signType;
+    delete sign_params.sign_type;
+
+    const sortedKeys = Object.keys(sign_params).sort();
+    const sign_parts: string[] = [];
+    for (const key of sortedKeys) {
+      const value = sign_params[key];
+      if (value !== "" && value !== null && value !== undefined) {
+        sign_parts.push(`${key}=${value}`);
+      }
+    }
+
+    let signStr = sign_parts.join("&") + `&key=${secret_key}`;
+    let localSign = crypto.createHash("md5").update(signStr).digest("hex").toLowerCase();
+    let gateSign = String(rawData.sign || "").trim().toLowerCase();
+
+    if (localSign !== gateSign) {
+      const signStrNoAmp = sign_parts.join("&") + `key=${secret_key}`;
+      const localSignNoAmp = crypto.createHash("md5").update(signStrNoAmp).digest("hex").toLowerCase();
+      if (localSignNoAmp === gateSign) {
+        localSign = localSignNoAmp;
+      } else {
+        console.error(`[GOPAY NOTIFY] SIGN MISMATCH | Local: ${localSign} | Gateway: ${gateSign}`);
+        return res.send("fail");
+      }
+    }
+
+    console.log("[GOPAY NOTIFY] SIGNATURE VERIFIED SUCCESSFULLY");
+
+    const mch_order_no = String(rawData.mchOrderNo || rawData.mch_order_no || "");
+    const trade_amount = parseFloat(rawData.amount || rawData.tradeAmount || 0);
+    const tradeResult = String(rawData.tradeResult || "");
+
+    const adminApp = getFirebaseAdmin();
+    const localList = getLocalTransactions();
+    const localItem = localList.find((x: any) => (x.order_no === mch_order_no || x.id === mch_order_no || x.depositNo === mch_order_no));
+
+    let orderData: any = localItem || null;
+    let depositDocRef: any = null;
+
+    if (adminApp) {
+      try {
+        const db = adminApp.firestore();
+        const depositRef = db.collection("deposits").doc(mch_order_no);
+        let depositDoc = await depositRef.get();
+
+        if (!depositDoc.exists) {
+          const qSnap = await db.collection("deposits").where("order_no", "==", mch_order_no).limit(1).get();
+          if (!qSnap.empty) {
+            depositDoc = qSnap.docs[0];
+          }
+        }
+
+        if (depositDoc.exists) {
+          depositDocRef = depositDoc.ref;
+          orderData = { ...depositDoc.data(), ...orderData };
+        }
+      } catch (dbErr) {
+        console.warn("[GOPAY NOTIFY] Firestore read warning:", dbErr);
+      }
+    }
+
+    if (!orderData) {
+      console.error(`[GOPAY NOTIFY] ERROR: Order No ${mch_order_no} not found in Database or local cache.`);
+      return res.send("fail");
+    }
+
+    const uid = orderData?.uid;
+    const current_status = orderData?.status;
+
+    if (current_status === "approved" || current_status === "1") {
+      console.log(`[GOPAY NOTIFY] WARNING: Order No ${mch_order_no} already processed.`);
+      return res.send("success");
+    }
+
+    if (tradeResult === "1") {
+      const creditAmount = Number(orderData?.finalCredit || trade_amount);
+      const originalAmount = Number(orderData?.amount || trade_amount);
+
+      if (adminApp && uid) {
+        try {
+          const db = adminApp.firestore();
+          const userRef = db.collection("users").doc(uid);
+          await db.runTransaction(async (transaction) => {
+            const userSnap = await transaction.get(userRef);
+            const userData = userSnap.exists ? userSnap.data() : {};
+            const currentBalance = Number(userData?.balance || 0);
+            const currentApprovedCount = Number(userData?.approvedDepositsCount || 0);
+            const currentTotalDeposited = Number(userData?.totalDeposited || 0);
+
+            transaction.set(userRef, {
+              balance: currentBalance + creditAmount,
+              approvedDepositsCount: currentApprovedCount + 1,
+              totalDeposited: currentTotalDeposited + originalAmount,
+              withdrawEnabled: (currentTotalDeposited + originalAmount >= 940 && currentApprovedCount + 1 >= 2)
+            }, { merge: true });
+
+            if (depositDocRef) {
+              transaction.update(depositDocRef, {
+                status: "approved",
+                updatedAt: new Date().toISOString()
+              });
+            } else {
+              transaction.set(db.collection("deposits").doc(mch_order_no), {
+                ...orderData,
+                status: "approved",
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+            }
+
+            const transactionRef = db.collection("transactions").doc(mch_order_no);
+            transaction.set(transactionRef, { status: "approved", updatedAt: new Date().toISOString() }, { merge: true });
+
+            const userHistoryRef = db.collection("users").doc(uid).collection("history").doc(mch_order_no);
+            transaction.set(userHistoryRef, { status: "approved", updatedAt: new Date().toISOString() }, { merge: true });
+          });
+        } catch (trxErr) {
+          console.warn("[GOPAY NOTIFY] Firestore transaction update warning:", trxErr);
+        }
+      }
+
+      saveLocalTransaction({
+        id: mch_order_no,
+        order_no: mch_order_no,
+        uid,
+        status: "approved",
+        amount: trade_amount,
+        finalCredit: creditAmount,
+        type: "deposit",
+        updatedAt: new Date().toISOString()
+      });
+
+      console.log(`[GOPAY NOTIFY] SUCCESS: Balance updated for UID: ${uid} | Amount: ${creditAmount} | Order: ${mch_order_no}`);
+      return res.send("success");
+    } else {
+      if (adminApp && depositDocRef) {
+        try {
+          await depositDocRef.update({ status: "failed", updatedAt: new Date().toISOString() });
+        } catch (e) {}
+      }
+      saveLocalTransaction({
+        id: mch_order_no,
+        order_no: mch_order_no,
+        uid,
+        status: "failed",
+        updatedAt: new Date().toISOString()
+      });
+      console.log(`[GOPAY NOTIFY] FAILED: Gateway sent failure status for Order: ${mch_order_no}`);
+      return res.send("success");
+    }
+  } catch (err: any) {
+    console.error("[GOPAY NOTIFY ERROR]:", err);
+    return res.send("fail");
+  }
+});
+
 // ProPay Callback
 app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, res) => {
   console.log(`[ProPay Callback] RAW REQUEST RECEIVED:`, {
