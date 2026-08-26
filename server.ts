@@ -227,23 +227,43 @@ app.post("/api/record-transaction", async (req, res) => {
     if (!tx || !tx.uid) {
       return res.status(400).json({ error: "Missing tx data or uid" });
     }
-    saveLocalTransaction(tx);
+
+    const docId = tx.id || tx.order_no || tx.depositNo || tx.withdrawNo || ("tx_" + Date.now());
+    let safeTx = { ...tx };
+
+    // Security check: Client cannot arbitrarily mark deposits as "approved"
+    if (safeTx.type === "deposit") {
+      const localList = getLocalTransactions();
+      const existing = localList.find((item: any) => (item.id === docId || item.order_no === docId));
+      if (!existing || existing.status !== "approved") {
+        safeTx.status = "pending";
+      }
+    }
+
+    saveLocalTransaction(safeTx);
 
     try {
       const adminApp = getFirebaseAdmin();
       if (adminApp) {
         const db = adminApp.firestore();
-        const docId = tx.id || tx.order_no || tx.depositNo || tx.withdrawNo || ("tx_" + Date.now());
-        await db.collection("transactions").doc(String(docId)).set(tx, { merge: true });
-        if (tx.type === "deposit") {
-          await db.collection("deposits").doc(String(docId)).set(tx, { merge: true });
-        } else if (tx.type === "withdraw") {
-          await db.collection("withdrawals").doc(String(docId)).set(tx, { merge: true });
+        if (safeTx.type === "deposit") {
+          const depRef = db.collection("deposits").doc(String(docId));
+          const snap = await depRef.get();
+          // If already approved in DB, do not downgrade, otherwise keep as pending
+          if (snap.exists && (snap.data()?.status === "approved" || snap.data()?.credited === true)) {
+            safeTx.status = "approved";
+          } else {
+            safeTx.status = "pending";
+          }
+          await depRef.set(safeTx, { merge: true });
+        } else if (safeTx.type === "withdraw") {
+          await db.collection("withdrawals").doc(String(docId)).set(safeTx, { merge: true });
         }
+        await db.collection("transactions").doc(String(docId)).set(safeTx, { merge: true });
       }
     } catch (fbErr: any) {}
 
-    return res.json({ success: true });
+    return res.json({ success: true, status: safeTx.status });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -774,7 +794,7 @@ app.all(["/pay1/gopay_notify.php", "/gopay_notify.php", "/api/gopay-notify"], as
       if (localSignNoAmp === gateSign) {
         localSign = localSignNoAmp;
       } else {
-        console.error(`[GOPAY NOTIFY] SIGN MISMATCH | Local: ${localSign} | Gateway: ${gateSign}`);
+        console.error(`[GOPAY NOTIFY] SECURITY REJECTION: SIGN MISMATCH | Local: ${localSign} | Gateway: ${gateSign}`);
         return res.send("fail");
       }
     }
@@ -784,6 +804,11 @@ app.all(["/pay1/gopay_notify.php", "/gopay_notify.php", "/api/gopay-notify"], as
     const mch_order_no = String(rawData.mchOrderNo || rawData.mch_order_no || "");
     const trade_amount = parseFloat(rawData.amount || rawData.tradeAmount || 0);
     const tradeResult = String(rawData.tradeResult || "");
+
+    if (!mch_order_no || isNaN(trade_amount) || trade_amount <= 0) {
+      console.error("[GOPAY NOTIFY] ERROR: Invalid order_no or trade_amount:", { mch_order_no, trade_amount });
+      return res.send("fail");
+    }
 
     const adminApp = getFirebaseAdmin();
     const localList = getLocalTransactions();
@@ -815,18 +840,21 @@ app.all(["/pay1/gopay_notify.php", "/gopay_notify.php", "/api/gopay-notify"], as
     }
 
     if (!orderData) {
-      console.error(`[GOPAY NOTIFY] ERROR: Order No ${mch_order_no} not found in Database or local cache.`);
+      console.error(`[GOPAY NOTIFY] SECURITY REJECTION: Order No ${mch_order_no} not found in Database.`);
       return res.send("fail");
     }
 
     const uid = orderData?.uid;
-    const current_status = orderData?.status;
+    const current_status = String(orderData?.status || "").toLowerCase();
+    const isAlreadyCredited = current_status === "approved" || current_status === "1" || current_status === "success" || orderData?.credited === true;
 
-    if (current_status === "approved" || current_status === "1") {
-      console.log(`[GOPAY NOTIFY] WARNING: Order No ${mch_order_no} already processed.`);
+    // Strict 1-Time Rule: If already credited, do NOT credit again
+    if (isAlreadyCredited) {
+      console.log(`[GOPAY NOTIFY] IDEMPOTENCY LOCK: Order No ${mch_order_no} is already processed & credited. Rejecting duplicate credit.`);
       return res.send("success");
     }
 
+    // Trade successful: Credit user balance atomically
     if (tradeResult === "1") {
       const creditAmount = Number(orderData?.finalCredit || trade_amount);
       const originalAmount = Number(orderData?.amount || trade_amount);
@@ -835,7 +863,18 @@ app.all(["/pay1/gopay_notify.php", "/gopay_notify.php", "/api/gopay-notify"], as
         try {
           const db = adminApp.firestore();
           const userRef = db.collection("users").doc(uid);
+
           await db.runTransaction(async (transaction) => {
+            // Check latest deposit state inside atomic lock
+            const latestDepSnap = depositDocRef ? await transaction.get(depositDocRef) : null;
+            if (latestDepSnap && latestDepSnap.exists) {
+              const latestData = latestDepSnap.data();
+              if (latestData?.status === "approved" || latestData?.status === "1" || latestData?.credited === true) {
+                console.log(`[GOPAY NOTIFY] Transaction aborted: Order ${mch_order_no} already credited inside lock.`);
+                return;
+              }
+            }
+
             const userSnap = await transaction.get(userRef);
             const userData = userSnap.exists ? userSnap.data() : {};
             const currentBalance = Number(userData?.balance || 0);
@@ -846,30 +885,33 @@ app.all(["/pay1/gopay_notify.php", "/gopay_notify.php", "/api/gopay-notify"], as
               balance: currentBalance + creditAmount,
               approvedDepositsCount: currentApprovedCount + 1,
               totalDeposited: currentTotalDeposited + originalAmount,
-              withdrawEnabled: (currentTotalDeposited + originalAmount >= 940 && currentApprovedCount + 1 >= 2)
+              withdrawEnabled: (currentTotalDeposited + originalAmount >= 940 && currentApprovedCount + 1 >= 2),
+              updatedAt: new Date().toISOString()
             }, { merge: true });
 
+            const updatedDepositData = {
+              ...orderData,
+              status: "approved",
+              credited: true,
+              creditedAmount: creditAmount,
+              creditedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
+
             if (depositDocRef) {
-              transaction.update(depositDocRef, {
-                status: "approved",
-                updatedAt: new Date().toISOString()
-              });
+              transaction.update(depositDocRef, updatedDepositData);
             } else {
-              transaction.set(db.collection("deposits").doc(mch_order_no), {
-                ...orderData,
-                status: "approved",
-                updatedAt: new Date().toISOString()
-              }, { merge: true });
+              transaction.set(db.collection("deposits").doc(mch_order_no), updatedDepositData, { merge: true });
             }
 
             const transactionRef = db.collection("transactions").doc(mch_order_no);
-            transaction.set(transactionRef, { status: "approved", updatedAt: new Date().toISOString() }, { merge: true });
+            transaction.set(transactionRef, { status: "approved", credited: true, updatedAt: new Date().toISOString() }, { merge: true });
 
             const userHistoryRef = db.collection("users").doc(uid).collection("history").doc(mch_order_no);
-            transaction.set(userHistoryRef, { status: "approved", updatedAt: new Date().toISOString() }, { merge: true });
+            transaction.set(userHistoryRef, { status: "approved", credited: true, updatedAt: new Date().toISOString() }, { merge: true });
           });
         } catch (trxErr) {
-          console.warn("[GOPAY NOTIFY] Firestore transaction update warning:", trxErr);
+          console.warn("[GOPAY NOTIFY] Firestore transaction error:", trxErr);
         }
       }
 
@@ -878,18 +920,26 @@ app.all(["/pay1/gopay_notify.php", "/gopay_notify.php", "/api/gopay-notify"], as
         order_no: mch_order_no,
         uid,
         status: "approved",
+        credited: true,
         amount: trade_amount,
         finalCredit: creditAmount,
         type: "deposit",
         updatedAt: new Date().toISOString()
       });
 
-      console.log(`[GOPAY NOTIFY] SUCCESS: Balance updated for UID: ${uid} | Amount: ${creditAmount} | Order: ${mch_order_no}`);
+      console.log(`[GOPAY NOTIFY] SUCCESS: Verified balance credited for UID: ${uid} | Amount: ${creditAmount} | Order: ${mch_order_no}`);
       return res.send("success");
     } else {
-      if (adminApp && depositDocRef) {
+      // Failed trade / Fake transaction / Cancelled payment
+      console.log(`[GOPAY NOTIFY] PAYMENT CANCELLED/FAILED: Gateway reported tradeResult=${tradeResult} for Order: ${mch_order_no}`);
+      if (adminApp) {
         try {
-          await depositDocRef.update({ status: "failed", updatedAt: new Date().toISOString() });
+          const db = adminApp.firestore();
+          const targetRef = depositDocRef || db.collection("deposits").doc(mch_order_no);
+          await targetRef.set({ status: "failed", cancelled: true, updatedAt: new Date().toISOString() }, { merge: true });
+          if (uid) {
+            await db.collection("users").doc(uid).collection("history").doc(mch_order_no).set({ status: "failed", cancelled: true, updatedAt: new Date().toISOString() }, { merge: true });
+          }
         } catch (e) {}
       }
       saveLocalTransaction({
@@ -897,9 +947,9 @@ app.all(["/pay1/gopay_notify.php", "/gopay_notify.php", "/api/gopay-notify"], as
         order_no: mch_order_no,
         uid,
         status: "failed",
+        cancelled: true,
         updatedAt: new Date().toISOString()
       });
-      console.log(`[GOPAY NOTIFY] FAILED: Gateway sent failure status for Order: ${mch_order_no}`);
       return res.send("success");
     }
   } catch (err: any) {
@@ -1036,10 +1086,6 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
       console.error(e);
       res.status(500).send("Error");
   }
-});
-
-app.all("/api/*", (req, res) => {
-  res.status(404).json({ error: `API route ${req.method} ${req.url} not found` });
 });
 
 // Full-Screen Embedded Chat Route to support prefilling visitor profile dynamically
@@ -1193,7 +1239,7 @@ app.post("/api/verify-payment", async (req, res) => {
   try {
     const { order_no } = req.body;
     if (!order_no) {
-      return res.status(400).json({ error: "Missing order_no" });
+      return res.status(400).json({ error: "Missing order_no", success: false, status: "failed" });
     }
     const cleanOrderNo = String(order_no).trim();
     let db = null;
@@ -1202,62 +1248,142 @@ app.post("/api/verify-payment", async (req, res) => {
       if (adminApp) db = adminApp.firestore();
     } catch(e) {}
 
-    let depositData = null;
-    let docRef = null;
+    let depositData: any = null;
+    const localList = getLocalTransactions();
+    const localItem = localList.find((x: any) => (x.order_no === cleanOrderNo || x.id === cleanOrderNo || x.depositNo === cleanOrderNo));
+    if (localItem) {
+      depositData = { ...localItem };
+    }
 
     if (db) {
-      // 1. Direct get
-      let dSnap = await db.collection("deposits").doc(cleanOrderNo).get();
-      if (dSnap.exists) {
-        depositData = dSnap.data();
-        docRef = dSnap.ref;
-      } else {
-        // 2. Query by order_no field
-        let qSnap = await db.collection("deposits").where("order_no", "==", cleanOrderNo).limit(1).get();
-        if (!qSnap.empty) {
-          depositData = qSnap.docs[0].data();
-          docRef = qSnap.docs[0].ref;
-        }
-      }
-
-      if (depositData && depositData.status === "pending") {
-        // Auto approve if valid
-        const uid = depositData.uid;
-        const amount = Number(depositData.finalCredit || depositData.amount || 0);
-        await docRef.update({ status: "approved", updatedAt: new Date().toISOString() });
-        if (uid && amount > 0) {
-          const userRef = db.collection("users").doc(uid);
-          const uSnap = await userRef.get();
-          if (uSnap.exists) {
-            const uData = uSnap.data();
-            const currentBal = Number(uData.balance || 0);
-            const totalDep = Number(uData.totalDeposited || 0);
-            const depCount = Number(uData.approvedDepositsCount || 0);
-            await userRef.update({
-              balance: (currentBal + amount).toFixed(2),
-              totalDeposited: (totalDep + amount).toFixed(2),
-              approvedDepositsCount: depCount + 1,
-              updatedAt: new Date().toISOString()
-            });
+      try {
+        // 1. Direct get
+        let dSnap = await db.collection("deposits").doc(cleanOrderNo).get();
+        if (dSnap.exists) {
+          depositData = { ...depositData, ...dSnap.data() };
+        } else {
+          // 2. Query by order_no field
+          let qSnap = await db.collection("deposits").where("order_no", "==", cleanOrderNo).limit(1).get();
+          if (!qSnap.empty) {
+            depositData = { ...depositData, ...qSnap.docs[0].data() };
           }
         }
-        depositData.status = "approved";
+      } catch (dbErr) {
+        console.warn("[verify-payment] Firestore read warning:", dbErr);
       }
     }
 
+    if (!depositData) {
+      return res.json({
+        success: false,
+        status: "failed",
+        error: "ভুল ট্রানজ্যাকশন আইডি! কোনো রেকর্ড পাওয়া যায়নি।",
+        amount: 0,
+        finalCredit: 0
+      });
+    }
+
+    const isApproved = depositData.status === "approved" || depositData.status === "success" || depositData.credited === true;
+    const isPending = depositData.status === "pending" || depositData.status === "processing";
+    const isFailed = depositData.status === "failed" || depositData.status === "cancelled";
+
+    const currentStatus = isApproved ? "approved" : (isPending ? "pending" : "failed");
+
     res.json({
-      success: depositData?.status === "approved" || depositData?.status === "success",
-      status: depositData?.status || "approved",
+      success: isApproved,
+      status: currentStatus,
       amount: depositData?.amount || 0,
-      finalCredit: depositData?.finalCredit || depositData?.amount || 0
+      finalCredit: depositData?.finalCredit || depositData?.amount || 0,
+      message: isApproved ? "পেমেন্ট সফলভাবে ভেরিফাই ও ক্রেডিট করা হয়েছে।" : (isPending ? "পেমেন্ট প্রক্রিয়াধীন রয়েছে..." : "পেমেন্ট ব্যর্থ বা বাতিল হয়েছে।")
     });
   } catch (err: any) {
     console.error("Payment verification endpoint error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, success: false, status: "failed" });
   }
 });
 
 // Auto Check User Deposits Endpoint
+// Validate Manual / Direct TrxID Endpoint
+app.post("/api/validate-manual-deposit", async (req, res) => {
+  try {
+    const { uid, transactionId, order_no, amount } = req.body;
+    const cleanTxId = String(transactionId || order_no || "").trim();
+    if (!cleanTxId) {
+      return res.status(400).json({ success: false, error: "ট্রানজ্যাকশন আইডি প্রদান করুন।" });
+    }
+
+    let db = null;
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) db = adminApp.firestore();
+    } catch (e) {}
+
+    // Check duplicate usage across database
+    if (db) {
+      try {
+        // 1. Check if this TrxID is already approved or credited anywhere
+        const querySnap = await db.collection("deposits")
+          .where("transactionId", "==", cleanTxId)
+          .limit(10)
+          .get();
+
+        for (const doc of querySnap.docs) {
+          const d = doc.data();
+          if (d.status === "approved" || d.status === "success" || d.credited === true) {
+            return res.status(400).json({
+              success: false,
+              error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে!"
+            });
+          }
+        }
+
+        const queryOrderSnap = await db.collection("deposits")
+          .where("order_no", "==", cleanTxId)
+          .limit(10)
+          .get();
+
+        for (const doc of queryOrderSnap.docs) {
+          const d = doc.data();
+          if (d.status === "approved" || d.status === "success" || d.credited === true) {
+            return res.status(400).json({
+              success: false,
+              error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে!"
+            });
+          }
+        }
+      } catch (dbErr) {
+        console.warn("[validate-manual-deposit] Firestore duplicate check warning:", dbErr);
+      }
+    }
+
+    // Check local transaction store for duplicates
+    const localList = getLocalTransactions();
+    const isDup = localList.some((x: any) => 
+      (x.transactionId === cleanTxId || x.order_no === cleanTxId || x.id === cleanTxId) &&
+      (x.status === "approved" || x.credited === true)
+    );
+
+    if (isDup) {
+      return res.status(400).json({
+        success: false,
+        error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে!"
+      });
+    }
+
+    // Fake TrxID detection: must have minimum valid length & alphanumeric structure
+    if (cleanTxId.length < 8 || !/^[a-zA-Z0-9_-]+$/.test(cleanTxId)) {
+      return res.status(400).json({
+        success: false,
+        error: "ভুল বা অবৈধ ট্রানজ্যাকশন আইডি! ডিপোজিট বাতিল করা হলো।"
+      });
+    }
+
+    return res.json({ success: true, message: "ট্রানজ্যাকশন আইডি গ্রহণ করা হয়েছে, যাচাইকরণ প্রক্রিয়াধীন।" });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post("/api/auto-check-user-deposits", async (req, res) => {
   try {
     const { uid } = req.body;
