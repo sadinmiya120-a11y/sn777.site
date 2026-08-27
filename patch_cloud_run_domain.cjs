@@ -1,7 +1,7 @@
 const fs = require("fs");
 const esbuild = require("esbuild");
 
-const BACKEND_URL = "https://sn777-site-864935185164.us-west1.run.app";
+const BACKEND_URL = "https://sn777.site";
 
 const jsFiles = [
   "dist/assets/index-sn777-v5.js",
@@ -14,6 +14,12 @@ jsFiles.forEach(filePath => {
   if (!fs.existsSync(filePath)) return;
   let code = fs.readFileSync(filePath, "utf8");
 
+  // Replace any existing unsafe fetch override from previous patches
+  code = code.replace(
+    /window\.fetch\s*=\s*function\(input,\s*init\)\s*\{([\s\S]*?)\};/g,
+    `if (origFetch) { var customFetch = function(input, init) { $1 }; try { window.fetch = customFetch; } catch(e) { try { Object.defineProperty(window, "fetch", { value: customFetch, writable: true, configurable: true, enumerable: true }); } catch(err) {} } }`
+  );
+
   // If not already injected at top of JS bundle
   if (!code.includes("window.BACKEND_API_BASE")) {
     const headerCode = `
@@ -23,16 +29,27 @@ jsFiles.forEach(filePath => {
     window.BACKEND_API_BASE = isLocalOrRunApp ? "" : "${BACKEND_URL}";
     
     var origFetch = window.fetch;
-    window.fetch = function(input, init) {
-      if (typeof input === "string") {
-        if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
-          if (window.BACKEND_API_BASE) {
-            input = window.BACKEND_API_BASE + input;
+    if (origFetch) {
+      var customFetch = function(input, init) {
+        if (typeof input === "string") {
+          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
+            if (window.BACKEND_API_BASE) {
+              input = window.BACKEND_API_BASE + input;
+            }
           }
         }
+        return origFetch.call(this, input, init);
+      };
+      try {
+        window.fetch = customFetch;
+      } catch (e) {
+        try {
+          Object.defineProperty(window, "fetch", { value: customFetch, writable: true, configurable: true, enumerable: true });
+        } catch (err) {
+          console.warn("[Auth Proxy Client Patch Warning] Failed to patch window.fetch:", err);
+        }
       }
-      return origFetch.call(this, input, init);
-    };
+    }
   }
 })();
 `;

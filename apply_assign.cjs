@@ -1,7 +1,7 @@
 const fs = require("fs");
 const esbuild = require("esbuild");
 
-const BACKEND_URL = "https://sn777-site-864935185164.us-west1.run.app";
+const BACKEND_URL = "https://sn777.site";
 
 const files = [
   "dist/assets/index-sn777-v5.js",
@@ -20,6 +20,8 @@ files.forEach(file => {
     const newSnippet = 'window.location.assign("' + BACKEND_URL + '/gopay_pay.php?uid=" + encodeURIComponent(gt.currentUser.uid) + "&amount=" + encodeURIComponent(E) + "&method=" + encodeURIComponent(Be) + "&order_no=" + encodeURIComponent(Te)),fi("")';
     code = code.replace(oldSnippet, newSnippet);
   }
+  code = code.replace(/https:\/\/sn777-site-864935185164\.us-west1\.run\.app/g, BACKEND_URL);
+  code = code.replace(/https:\/\/https:\/\//g, "https://");
 
   try {
     esbuild.transformSync(code, { loader: "js" });
