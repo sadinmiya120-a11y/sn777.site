@@ -23,50 +23,55 @@ jsFiles.forEach(filePath => {
     window.BACKEND_API_BASE = isLocalOrRunApp ? "" : "${BACKEND_URL}";
     
     var origFetch = window.fetch;
-    window.fetch = function(input, init) {
-      if (typeof input === "string") {
-        if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
-          if (window.BACKEND_API_BASE) {
-            input = window.BACKEND_API_BASE + input;
+    if (typeof origFetch === "function") {
+      var customFetch = function(input, init) {
+        if (typeof input === "string") {
+          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
+            if (window.BACKEND_API_BASE) {
+              input = window.BACKEND_API_BASE + input;
+            }
           }
         }
+        return origFetch.call(this, input, init);
+      };
+      try {
+        Object.defineProperty(window, "fetch", {
+          value: customFetch,
+          writable: true,
+          configurable: true,
+          enumerable: true
+        });
+      } catch (e) {
+        try { window.fetch = customFetch; } catch (err) {}
       }
-      return origFetch.call(this, input, init);
-    };
+    }
   }
 })();
 `;
     code = headerCode + code;
   }
 
-  // 1. Direct hardcoded fallback if BACKEND_API_BASE is undefined in any context
-  code = code.replace(
-    /\$\{window\.BACKEND_API_BASE\|\|""\}\/gopay_pay\.php/g,
-    '${(typeof window!=="undefined"&&window.BACKEND_API_BASE)?window.BACKEND_API_BASE:"' + BACKEND_URL + '"}/gopay_pay.php'
-  );
-  code = code.replace(
-    /\/gopay_pay\.php\?uid=/g,
-    BACKEND_URL + '/gopay_pay.php?uid='
-  );
+  // Sanitization: Clean up any repeated/corrupted domain prefixes
+  code = code.replace(/(?:https?:\/\/[a-zA-Z0-9_.-]+)+\/gopay_pay\.php/g, "/gopay_pay.php");
+  code = code.replace(/https:\/\/sn777\.sitehttps:\/\/sn777\.site/g, "");
+  code = code.replace(/sn777\.sitehttps/g, "");
 
-  // 2. Also ensure any /gopay_pay.php strings directly use the full Cloud Run backend URL
-  code = code.replace(
-    /`\/gopay_pay\.php/g,
-    '`' + BACKEND_URL + '/gopay_pay.php'
-  );
-  code = code.replace(
-    /"\/gopay_pay\.php"/g,
-    '"' + BACKEND_URL + '/gopay_pay.php"'
-  );
-  code = code.replace(
-    /'\/gopay_pay\.php'/g,
-    "'" + BACKEND_URL + "/gopay_pay.php'"
-  );
+  // Deposit limit and preset options patch
+  code = code.replace(/সীমা:\s*৳৩০০\s*-\s*৳২৫,০০০/g, "সীমা: ৳২০০ - ৳২৫,০০০");
+  code = code.replace(/সীমা:\s*৳৫০০\s*-\s*৳২৫,০০০/g, "সীমা: ৳২০০ - ৳২৫,০০০");
+  if (code.includes('ya=[{amount:"500",displayOrig:"500",total:"500",bonusPercent:""}')) {
+    code = code.replace(
+      'ya=[{amount:"500",displayOrig:"500",total:"500",bonusPercent:""}',
+      'ya=[{amount:"200",displayOrig:"200",total:"200",bonusPercent:""},{amount:"300",displayOrig:"300",total:"300",bonusPercent:""},{amount:"400",displayOrig:"400",total:"400",bonusPercent:""},{amount:"500",displayOrig:"500",total:"500",bonusPercent:""}'
+    );
+  }
+  code = code.replace(/ee=L\?500:300/g, "ee=L?500:200");
+  code = code.replace(/children:"৩০০ টাকা"\}/g, 'children:"২০০ টাকা"}');
 
   try {
     esbuild.transformSync(code, { loader: "js" });
     fs.writeFileSync(filePath, code, "utf8");
-    console.log(`[${filePath}] Successfully hardcoded Cloud Run URL into bundle.`);
+    console.log(`[${filePath}] Successfully sanitized & patched domain/deposit limits.`);
   } catch (err) {
     console.error(`[${filePath}] Error:`, err.message);
   }
@@ -86,7 +91,6 @@ if (fs.existsSync("dist/index.html")) {
   if (!html.includes("window.BACKEND_API_BASE")) {
     html = html.replace("<head>", "<head>" + scriptInjection);
   }
-  // Make sure to bump version query param to force browser cache refresh
   html = html.replace(/index-sn777-v5\.js\?v=\d+/g, `index-sn777-v5.js?v=${Date.now()}`);
   fs.writeFileSync("dist/index.html", html, "utf8");
   console.log("Updated dist/index.html");
