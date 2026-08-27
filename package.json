@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "mkdir -p dist && cp -r dist_backup/* dist/ && node patch_deposit_amounts.cjs && node patch_cloud_run_domain.cjs && npx esbuild server.ts --bundle --platform=node --target=node20 --format=cjs --packages=external --outfile=dist/server.cjs",
+    "build": "mkdir -p dist && cp -r dist_backup/* dist/ && npx esbuild server.ts --bundle --platform=node --target=node20 --format=cjs --packages=external --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "lint": "echo 'No linting needed'"
   },

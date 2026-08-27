@@ -628,12 +628,14 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
     const isBkash = rawMethod.includes("bkash");
     const payName = isBkash ? "BKASH" : "NAGAD";
     // Primary: 2202 for BKASH, 2201 for NAGAD
-    const candidatePayTypes = isBkash ? ["2202", "1002"] : ["2201", "1001"];
+    const payType = isBkash ? "2202" : "2201";
 
-    const notifyURL = "https://sn777.site/pay1/gopay_notify.php";
-    let jumpURL = "https://sn777.site/#/wallet/RechargeHistory";
+    const notifyURL = `${origin}/pay1/gopay_notify.php`;
+    let jumpURL = `${origin}/#/wallet/RechargeHistory`;
     if (rawData.return_url || rawData.page_url || rawData.redirect_url) {
       jumpURL = String(rawData.return_url || rawData.page_url || rawData.redirect_url);
+    } else if (req.headers.referer && req.headers.referer.includes("sn777.site")) {
+      jumpURL = `https://sn777.site/#/wallet/RechargeHistory`;
     }
 
     // 100% bonus for deposit >= 550
@@ -693,18 +695,17 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
     const secretKey = "87a89555480aae027ad84daf666602d7";
     const apiUrl = "https://mch.go-pay.cyou/pay.php";
 
+    const candidatePayTypes = ["2201", "2202", "1001", "1002"];
     let cashierUrl = "";
     let lastErrorMsg = "FAIL";
 
-    for (let i = 0; i < candidatePayTypes.length; i++) {
-      const pType = candidatePayTypes[i];
-      const attemptOrderNo = i === 0 ? serial : `${serial}_${i}`;
+    for (const pType of candidatePayTypes) {
       const postData: Record<string, string> = {
         version: "1.0",
         app_id,
         notify_url: notifyURL,
         page_url: jumpURL,
-        mch_order_no: attemptOrderNo,
+        mch_order_no: serial,
         pay_type: pType,
         trade_amount: String(amount),
         order_date: createdate,
@@ -752,9 +753,6 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
       }
       return res.redirect(cashierUrl);
     } else {
-      if (req.headers.accept?.includes("application/json") || req.xhr) {
-        return res.status(400).json({ success: false, error: lastErrorMsg, message: lastErrorMsg });
-      }
       return res.status(400).send(`<h3>gopay API ERROR: ${lastErrorMsg}</h3>`);
     }
   } catch (err: any) {
