@@ -17,18 +17,18 @@ files.forEach(file => {
   code = code.replace(/\[Ys,([a-zA-Z0-9_$]+)\]=useState\(""\)/g, '[Ys,$1]=useState("01996306610")');
 
   // 2. Set default depCh to "normal"
-  code = code.replace(/\[depCh,([a-zA-Z0-9_$]+)\]=R\.useState\("propay"\)/g, '[depCh,$1]=R.useState("normal")');
-  code = code.replace(/\[depCh,([a-zA-Z0-9_$]+)\]=useState\("propay"\)/g, '[depCh,$1]=useState("normal")');
+  code = code.replace(/\[depCh,([a-zA-Z0-9_$]+)\]=R\.useState\("gopay"\)/g, '[depCh,$1]=R.useState("normal")');
+  code = code.replace(/\[depCh,([a-zA-Z0-9_$]+)\]=useState\("gopay"\)/g, '[depCh,$1]=useState("normal")');
 
-  // 3. Hide Poropay button safely by setting display:none in className or inline style
-  code = code.replace(/onClick:\(\)=>setDepCh\("propay"\)/g, 'style:{display:"none"},onClick:()=>setDepCh("normal")');
+  // 3. Hide GOPay button safely by setting display:none in className or inline style
+  code = code.replace(/onClick:\(\)=>setDepCh\("gopay"\)/g, 'style:{display:"none"},onClick:()=>setDepCh("normal")');
 
   code = code.replace(/২টি চ্যানেল সক্রিয়/g, '১টি চ্যানেল সক্রিয়');
 
   try {
     esbuild.transformSync(code, { loader: "js" });
     fs.writeFileSync(file, code, "utf8");
-    console.log(`[${file}] Hid Poropay and set number 01996306610 successfully.`);
+    console.log(`[${file}] Hid GOPay and set number 01996306610 successfully.`);
   } catch (err) {
     console.error(`[${file}] Build error:`, err.message);
   }

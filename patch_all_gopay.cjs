@@ -3,20 +3,20 @@ const fs = require('fs');
 function applyPatches(filePath) {
   let content = fs.readFileSync(filePath, 'utf8');
 
-  // 1. Patch ProPay checkout URL parameters
+  // 1. Patch GOPay checkout URL parameters
   const oldParams = 'wt = new URLSearchParams({\n            api_key: Ne,\n            uid: gt.currentUser.uid,\n            amount: Number(E).toFixed(2),\n            order_no: Te,\n            return_url: Ke,\n            pass_through_key: Ne,\n            pass_through_callback_url: Ue,\n          });';
   
   const newParams = 'wt = new URLSearchParams({\n            api_key: Ne,\n            uid: gt.currentUser.uid,\n            amount: Number(E).toFixed(2),\n            order_no: Te,\n            return_url: Ke,\n            success_url: Ke,\n            cancel_url: `${qe}/fail?order_no=${Te}`,\n            callback_url: Ue,\n            webhook_url: Ue,\n            notify_url: Ue,\n            ipn_url: Ue,\n            pass_through_key: Ne,\n            pass_through_callback_url: Ue,\n          });\n          try { localStorage.setItem("sn777_pending_order", JSON.stringify({ order_no: Te, amount: Number(E), time: Date.now() })); } catch(e) {}';
 
   if (content.includes(oldParams)) {
     content = content.replace(oldParams, newParams);
-    console.log(`[Patch 1] Updated ProPay URL parameters in ${filePath}`);
+    console.log(`[Patch 1] Updated GOPay URL parameters in ${filePath}`);
   } else {
     // Try single-line version if formatted differently
     const singleLineOld = 'wt = new URLSearchParams({ api_key: Ne, uid: gt.currentUser.uid, amount: Number(E).toFixed(2), order_no: Te, return_url: Ke, pass_through_key: Ne, pass_through_callback_url: Ue, })';
     if (content.includes(singleLineOld)) {
       content = content.replace(singleLineOld, newParams);
-      console.log(`[Patch 1 SingleLine] Updated ProPay URL parameters in ${filePath}`);
+      console.log(`[Patch 1 SingleLine] Updated GOPay URL parameters in ${filePath}`);
     } else {
       console.warn(`[Patch 1] Old params block not found in ${filePath}`);
     }

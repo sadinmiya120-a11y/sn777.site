@@ -186,7 +186,7 @@ app.post("/api/update-username", async (req, res) => {
 });
 
 
-// --- ProPay Integration ---
+// --- GOPay Integration ---
 
 const TX_STORE_FILE = path.join(process.cwd(), "data", "transactions_store.json");
 
@@ -371,11 +371,11 @@ app.post("/api/create-payment", async (req, res) => {
     });
 
     const gateway_url = (method === 'bkash') 
-               ? 'https://checkout.propay.cyou/pay/Bkash.php' 
-               : 'https://checkout.propay.cyou/pay/Nagad.php';
+               ? 'https://checkout.gopay.cyou/pay/Bkash.php' 
+               : 'https://checkout.gopay.cyou/pay/Nagad.php';
 
     const params = new URLSearchParams({
-        api_key: process.env.PROPAY_API_KEY!,
+        api_key: process.env.GOPAY_API_KEY || '',
         uid: uid,
         amount: amount.toString(),
         order_no: order_no,
@@ -958,9 +958,9 @@ app.all(["/pay1/gopay_notify.php", "/gopay_notify.php", "/api/gopay-notify"], as
   }
 });
 
-// ProPay Callback
-app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, res) => {
-  console.log(`[ProPay Callback] RAW REQUEST RECEIVED:`, {
+// GOPay Callback
+app.all(["/api/callback", "/api/gopay-callback", "/callback.php"], async (req, res) => {
+  console.log(`[GOPay Callback] RAW REQUEST RECEIVED:`, {
       method: req.method,
       url: req.url,
       headers: req.headers,
@@ -975,9 +975,9 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
     const body = req.body && Object.keys(req.body).length > 0 ? req.body : req.query;
     const { signature, order_no, amount } = body;
     
-    console.log(`[ProPay Callback] Extracted Data:`, { order_no, amount, signature });
+    console.log(`[GOPay Callback] Extracted Data:`, { order_no, amount, signature });
 
-    const api_key = process.env.PROPAY_API_KEY || 'cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc';
+    const api_key = process.env.GOPAY_API_KEY || 'cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc';
     
     // Convert amount to match PHP's (float) behavior
     const formatted_amount = parseFloat(amount);
@@ -990,7 +990,7 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
     const expected_signature = hmac.digest('hex').toLowerCase();
     const received_signature = (signature || '').toString().trim().toLowerCase();
 
-    console.log(`[ProPay Callback] VERIFICATION ATTEMPT:`, { 
+    console.log(`[GOPay Callback] VERIFICATION ATTEMPT:`, { 
         order_no, 
         received_signature,
         expected_signature,
@@ -1003,7 +1003,7 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
       crypto.timingSafeEqual(Buffer.from(expected_signature, "utf8"), Buffer.from(received_signature, "utf8"))
     );
     if (isSigValid) {
-        console.log(`[ProPay Callback] Signature VALID for order: ${order_no}`);
+        console.log(`[GOPay Callback] Signature VALID for order: ${order_no}`);
         const depositRef = db.collection('deposits').doc(order_no);
         const transactionRef = db.collection('transactions').doc(order_no);
         
@@ -1062,10 +1062,10 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
                             status: 'approved'
                         }, { merge: true });
                     });
-                    console.log(`[ProPay Callback] Order ${order_no} processed. User ${uid} credited ${amountToCredit}`);
+                    console.log(`[GOPay Callback] Order ${order_no} processed. User ${uid} credited ${amountToCredit}`);
                     res.send('Success');
                 } catch (error: any) {
-                    console.error(`[ProPay Callback] Transaction error for ${order_no}:`, error);
+                    console.error(`[GOPay Callback] Transaction error for ${order_no}:`, error);
                     res.status(500).send('Transaction failed: ' + error.message);
                 }
             } else {
@@ -1075,7 +1075,7 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
             res.status(404).send('Order not found');
         }
     } else {
-        console.error(`[ProPay Callback] Signature INVALID for order: ${order_no}`);
+        console.error(`[GOPay Callback] Signature INVALID for order: ${order_no}`);
         await db.collection('webhook_logs').add({
             error: 'Signature Mismatch',
             order: order_no
@@ -1083,7 +1083,7 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
         res.status(403).send("Invalid Signature");
     }
   } catch (e: any) {
-      console.error(e);
+      console.error("[GOPay Callback] Error:", e);
       res.status(500).send("Error");
   }
 });

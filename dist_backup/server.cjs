@@ -172,9 +172,9 @@ app.post("/api/create-payment", async (req, res) => {
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
       order_no
     });
-    const gateway_url = method === "bkash" ? "https://checkout.propay.cyou/pay/Bkash.php" : "https://checkout.propay.cyou/pay/Nagad.php";
+    const gateway_url = method === "bkash" ? "https://checkout.gopay.cyou/pay/Bkash.php" : "https://checkout.gopay.cyou/pay/Nagad.php";
     const params = new URLSearchParams({
-      api_key: process.env.PROPAY_API_KEY,
+      api_key: process.env.GOPAY_API_KEY,
       uid,
       amount: amount.toString(),
       order_no,
@@ -363,8 +363,8 @@ app.get("/api/debug-project", (req, res) => {
     res.json({ error: e.message });
   }
 });
-app.post(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, res) => {
-  console.log(`[ProPay Callback] RAW REQUEST RECEIVED:`, {
+app.post(["/api/callback", "/api/gopay-callback", "/callback.php"], async (req, res) => {
+  console.log(`[GOPay Callback] RAW REQUEST RECEIVED:`, {
     method: req.method,
     url: req.url,
     headers: req.headers,
@@ -376,22 +376,22 @@ app.post(["/api/callback", "/api/propay-callback", "/callback.php"], async (req,
     const db = adminApp.firestore();
     const body = req.body && Object.keys(req.body).length > 0 ? req.body : req.query;
     const { signature, order_no, amount } = body;
-    console.log(`[ProPay Callback] Extracted Data:`, { order_no, amount, signature });
-    const api_key = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
+    console.log(`[GOPay Callback] Extracted Data:`, { order_no, amount, signature });
+    const api_key = process.env.GOPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
     const formatted_amount = parseFloat(amount);
     const dataToSign = order_no + formatted_amount.toString();
     const hmac = import_crypto.default.createHmac("sha256", api_key);
     hmac.update(dataToSign);
     const expected_signature = hmac.digest("hex").toLowerCase();
     const received_signature = (signature || "").toString().trim().toLowerCase();
-    console.log(`[ProPay Callback] VERIFICATION ATTEMPT:`, {
+    console.log(`[GOPay Callback] VERIFICATION ATTEMPT:`, {
       order_no,
       received_signature,
       expected_signature,
       match: received_signature === expected_signature
     });
     if (signature && import_crypto.default.timingSafeEqual(Buffer.from(expected_signature), Buffer.from(received_signature))) {
-      console.log(`[ProPay Callback] Signature VALID for order: ${order_no}`);
+      console.log(`[GOPay Callback] Signature VALID for order: ${order_no}`);
       const depositRef = db.collection("deposits").doc(order_no);
       const transactionRef = db.collection("transactions").doc(order_no);
       const depositDoc = await depositRef.get();
@@ -437,10 +437,10 @@ app.post(["/api/callback", "/api/propay-callback", "/callback.php"], async (req,
                 status: "approved"
               }, { merge: true });
             });
-            console.log(`[ProPay Callback] Order ${order_no} processed. User ${uid} credited ${amountToCredit}`);
+            console.log(`[GOPay Callback] Order ${order_no} processed. User ${uid} credited ${amountToCredit}`);
             res.send("Success");
           } catch (error) {
-            console.error(`[ProPay Callback] Transaction error for ${order_no}:`, error);
+            console.error(`[GOPay Callback] Transaction error for ${order_no}:`, error);
             res.status(500).send("Transaction failed: " + error.message);
           }
         } else {
@@ -450,7 +450,7 @@ app.post(["/api/callback", "/api/propay-callback", "/callback.php"], async (req,
         res.status(404).send("Order not found");
       }
     } else {
-      console.error(`[ProPay Callback] Signature INVALID for order: ${order_no}`);
+      console.error(`[GOPay Callback] Signature INVALID for order: ${order_no}`);
       await db.collection("webhook_logs").add({
         error: "Signature Mismatch",
         order: order_no

@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const order_no = 'ORD999999999999';
 const amount = '200';
-fetch('http://localhost:3000/api/propay-callback', {
+fetch('http://localhost:3000/api/gopay-callback', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json'

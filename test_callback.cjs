@@ -6,7 +6,7 @@ const formattedAmountForHash = parseFloat(amount);
 const dataToHash = order_no.toString() + formattedAmountForHash.toString();
 const expectedSignature = crypto.createHmac('sha256', api_key).update(dataToHash).digest('hex');
 
-fetch('http://localhost:3000/api/propay-callback', {
+fetch('http://localhost:3000/api/gopay-callback', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json'

@@ -60511,12 +60511,12 @@ function $z() {
         qe.includes("localhost") ||
           qe.includes("run.app") ||
           (qe = window.location.origin);
-        const Ue = `${qe}/api/propay-callback`,
+        const Ue = `${qe}/api/gopay-callback`,
           Ke = `${qe}/success?m=1&order_no=${Te}`,
           jt =
             Be === "bkash"
-              ? "https://checkout.propay.cyou/pay/Bkash.php"
-              : "https://checkout.propay.cyou/pay/Nagad.php",
+              ? "https://checkout.gopay.cyou/pay/Bkash.php"
+              : "https://checkout.gopay.cyou/pay/Nagad.php",
           wt = new URLSearchParams({
             api_key: Ne,
             uid: gt.currentUser.uid,

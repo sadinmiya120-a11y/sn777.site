@@ -10,7 +10,7 @@ const data = new URLSearchParams({
 const options = {
   hostname: 'localhost',
   port: 3000,
-  path: '/api/propay-callback',
+  path: '/api/gopay-callback',
   method: 'POST',
   headers: {
     'Content-Type': 'application/x-www-form-urlencoded',
