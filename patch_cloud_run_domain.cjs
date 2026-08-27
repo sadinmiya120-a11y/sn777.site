@@ -14,48 +14,76 @@ jsFiles.forEach(filePath => {
   if (!fs.existsSync(filePath)) return;
   let code = fs.readFileSync(filePath, "utf8");
 
-  // Remove any old/existing isLocalOrRunApp block to avoid duplicates and replace with safe version
-  code = code.replace(/\(function\(\)\s*\{\s*if\s*\(typeof\s*window\s*!==\s*"undefined"\)\s*\{\s*var\s*isLocalOrRunApp[\s\S]*?\}\s*\}\)\(\);?\s*/g, "");
-
-  const headerCode = `
+  // If not already injected at top of JS bundle
+  if (!code.includes("window.BACKEND_API_BASE")) {
+    const headerCode = `
 (function() {
   if (typeof window !== "undefined") {
     var isLocalOrRunApp = window.location.hostname.includes("run.app") || window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-    try {
-      window.BACKEND_API_BASE = isLocalOrRunApp ? "" : "${BACKEND_URL}";
-    } catch(e) {}
+    window.BACKEND_API_BASE = isLocalOrRunApp ? "" : "${BACKEND_URL}";
     
     var origFetch = window.fetch;
-    if (origFetch) {
+    if (typeof origFetch === "function") {
       var customFetch = function(input, init) {
         if (typeof input === "string") {
-          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/") || input.includes("gopay_pay.php")) {
+          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
             if (window.BACKEND_API_BASE) {
-              input = window.BACKEND_API_BASE + (input.startsWith("/") ? "" : "/") + input;
+              input = window.BACKEND_API_BASE + input;
             }
           }
         }
         return origFetch.call(this, input, init);
       };
       try {
-        window.fetch = customFetch;
+        Object.defineProperty(window, "fetch", {
+          value: customFetch,
+          writable: true,
+          configurable: true,
+          enumerable: true
+        });
       } catch (e) {
-        try {
-          Object.defineProperty(window, "fetch", {
-            value: customFetch,
-            writable: true,
-            configurable: true,
-            enumerable: true
-          });
-        } catch (err) {
-          console.warn("[Auth Proxy Client Patch Warning] Failed to patch window.fetch via DefineProperty:", err);
-        }
+        try { window.fetch = customFetch; } catch (err) {}
       }
     }
   }
 })();
 `;
-  code = headerCode + code;
+    code = headerCode + code;
+  }
+
+  // Replace any old unsafe window.fetch assignment in injected header
+  code = code.replace(
+    /var origFetch = window\.fetch;\s*window\.fetch = function\(input, init\) \{[\s\S]*?return origFetch\.call\(this, input, init\);\s*\};/g,
+    `var origFetch = window.fetch;
+    if (typeof origFetch === "function") {
+      var customFetch = function(input, init) {
+        if (typeof input === "string") {
+          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
+            if (window.BACKEND_API_BASE) {
+              input = window.BACKEND_API_BASE + input;
+            }
+          }
+        }
+        return origFetch.call(this, input, init);
+      };
+      try {
+        Object.defineProperty(window, "fetch", {
+          value: customFetch,
+          writable: true,
+          configurable: true,
+          enumerable: true
+        });
+      } catch (e) {
+        try { window.fetch = customFetch; } catch (err) {}
+      }
+    }`
+  );
+
+  // Replace any unsafe try{window.fetch=t} in minified code
+  code = code.replace(
+    "try{window.fetch=t}catch{try{Object.defineProperty(window,\"fetch\",{value:t,writable:!0,configurable:!0,enumerable:!0})}catch(a){console.warn(\"[Auth Proxy Client Patch Warning] Failed to patch window.fetch via DefineProperty:\",a)}}",
+    "try{Object.defineProperty(window,\"fetch\",{value:t,writable:!0,configurable:!0,enumerable:!0})}catch(a){try{window.fetch=t}catch(err){console.warn(\"[Auth Proxy Client Patch Warning] Failed to patch window.fetch via DefineProperty:\",a)}}"
+  );
 
   // 1. Direct hardcoded fallback if BACKEND_API_BASE is undefined in any context
   code = code.replace(
@@ -80,6 +108,16 @@ jsFiles.forEach(filePath => {
     /'\/gopay_pay\.php'/g,
     "'" + BACKEND_URL + "/gopay_pay.php'"
   );
+
+  // 3. Deposit limit and preset options patch
+  code = code.replace(/সীমা:\s*৳৩০০\s*-\s*৳২৫,০০০/g, "সীমা: ৳২০০ - ৳২৫,০০০");
+  code = code.replace(/সীমা:\s*৳৫০০\s*-\s*৳২৫,০০০/g, "সীমা: ৳২০০ - ৳২৫,০০০");
+  code = code.replace(
+    /ya=\[\{amount:"500",displayOrig:"500",total:"500",bonusPercent:""\}/g,
+    'ya=[{amount:"200",displayOrig:"200",total:"200",bonusPercent:""},{amount:"300",displayOrig:"300",total:"300",bonusPercent:""},{amount:"400",displayOrig:"400",total:"400",bonusPercent:""},{amount:"500",displayOrig:"500",total:"500",bonusPercent:""}'
+  );
+  code = code.replace(/ee=L\?500:300/g, "ee=L?500:200");
+  code = code.replace(/children:"৩০০ টাকা"\}/g, 'children:"২০০ টাকা"}');
 
   try {
     esbuild.transformSync(code, { loader: "js" });
