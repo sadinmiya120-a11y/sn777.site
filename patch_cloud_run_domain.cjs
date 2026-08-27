@@ -51,10 +51,15 @@ jsFiles.forEach(filePath => {
     code = headerCode + code;
   }
 
-  // Sanitization: Clean up any repeated/corrupted domain prefixes
+  // Sanitization: Clean up any repeated/corrupted domain prefixes first
   code = code.replace(/(?:https?:\/\/[a-zA-Z0-9_.-]+)+\/gopay_pay\.php/g, "/gopay_pay.php");
   code = code.replace(/https:\/\/sn777\.sitehttps:\/\/sn777\.site/g, "");
   code = code.replace(/sn777\.sitehttps/g, "");
+
+  // Set clean explicit backend URL https://sn777.site/gopay_pay.php for payment redirects
+  code = code.replace(/jt="\/gopay_pay\.php"/g, 'jt="https://sn777.site/gopay_pay.php"');
+  code = code.replace(/Le=`\/gopay_pay\.php\?/g, 'Le=`https://sn777.site/gopay_pay.php?');
+  code = code.replace(/window\.location\.assign\("\/gopay_pay\.php\?/g, 'window.location.assign("https://sn777.site/gopay_pay.php?');
 
   // Deposit limit and preset options patch
   code = code.replace(/সীমা:\s*৳৩০০\s*-\s*৳২৫,০০০/g, "সীমা: ৳২০০ - ৳২৫,০০০");
