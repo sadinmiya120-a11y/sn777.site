@@ -8,7 +8,7 @@ if (!isset($_GET['uid']) || !isset($_GET['amount'])) { die("Illegal access: UID 
 $uid   = mysqli_real_escape_string($conn, $_GET['uid']);
 $ramt  = (int)$_GET['amount']; 
 $payName = 'BKASH';
-$serial = date("Ymd").time().rand(100000,999999);
+$serial = isset($_GET['order_no']) && !empty($_GET['order_no']) ? mysqli_real_escape_string($conn, $_GET['order_no']) : (date("Ymd").time().rand(100000,999999));
 $createdate = date("Y-m-d H:i:s");
 
 // ১. ডাটাবেজ থেকে মোবাইল নম্বর রিড করা

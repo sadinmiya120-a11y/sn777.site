@@ -593,8 +593,91 @@ app.get("/api/debug-project", (req, res) => {
   }
 });
 
+// GOPay Direct JSON Initiation API
+app.post(["/api/gopay-init", "/api/gopay/init"], async (req, res) => {
+  try {
+    const rawData = { ...req.query, ...req.body };
+    const uid = rawData.uid;
+    const amount = parseFloat(rawData.amount || rawData.trade_amount || 0);
+    const rawMethod = String(rawData.method || rawData.goods_name || "bkash").toLowerCase();
+    const isBkash = rawMethod.includes("bkash");
+    const payName = isBkash ? "BKASH" : "NAGAD";
+    const payType = isBkash ? "2202" : "2201";
+
+    if (!uid || isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ success: false, error: "UID or Amount missing" });
+    }
+
+    const host = req.get("host") || "ais-dev-sxllemqiu46rogxyb2cm6w-552213914579.asia-east1.run.app";
+    const proto = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+    const origin = `${proto}://${host}`;
+    const serial = String(rawData.order_no || rawData.mch_order_no || (
+      new Date().toISOString().slice(0, 10).replace(/-/g, "") +
+      Math.floor(Date.now() / 1000) +
+      Math.floor(100000 + Math.random() * 900000)
+    ));
+    const now = new Date();
+    const createdate = now.toISOString().replace("T", " ").slice(0, 19);
+
+    const app_id = "GP_97386700";
+    const secretKey = "87a89555480aae027ad84daf666602d7";
+    const apiUrl = "https://mch.go-pay.cyou/pay.php";
+
+    const postData: Record<string, string> = {
+      version: "1.0",
+      app_id,
+      notify_url: "https://sn777.site/pay1/gopay_notify.php",
+      page_url: "https://sn777.site/#/wallet/RechargeHistory",
+      mch_order_no: serial,
+      pay_type: payType,
+      trade_amount: String(Math.floor(amount)),
+      order_date: createdate,
+      goods_name: payName,
+      mch_return_msg: "OK"
+    };
+
+    const sortedKeys = Object.keys(postData).sort();
+    let signStr = "";
+    for (const k of sortedKeys) {
+      const v = postData[k];
+      if (v !== "" && v !== null && v !== undefined) {
+        signStr += `${k}=${v}&`;
+      }
+    }
+    signStr += `key=${secretKey}`;
+    const sign = crypto.createHash("md5").update(signStr).digest("hex");
+    postData.sign = sign;
+    postData.sign_type = "MD5";
+
+    const apiRes = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(postData).toString()
+    });
+    const gopayData: any = await apiRes.json();
+
+    if (gopayData && gopayData.respCode === "SUCCESS" && gopayData.payInfo) {
+      return res.json({
+        success: true,
+        payInfo: gopayData.payInfo,
+        order_no: serial,
+        method: isBkash ? "bkash" : "nagad",
+        pay_type: payType
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: gopayData?.tradeMsg || "Failed to initialize payment",
+      respCode: gopayData?.respCode
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // GOPay Payment Initiation Route (supports both PHP URL and API URL)
-app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], async (req, res) => {
+app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], async (req, res) => {
   console.log(`[GOPAY PAY] Request received:`, {
     method: req.method,
     url: req.url,
@@ -606,7 +689,8 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
     const rawData = { ...req.query, ...req.body };
     const uid = rawData.uid;
     const amount = parseFloat(rawData.amount || rawData.trade_amount || 0);
-    const rawMethod = String(rawData.method || rawData.goods_name || "nagad").toLowerCase();
+    const pathStr = (req.path || "").toLowerCase();
+    const rawMethod = String(rawData.method || rawData.goods_name || (pathStr.includes("bkash") ? "bkash" : "nagad")).toLowerCase();
 
     if (!uid || isNaN(amount) || amount <= 0) {
       console.error("[GOPAY PAY] Missing or invalid UID/Amount:", { uid, amount });
@@ -625,7 +709,7 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
 
     const now = new Date();
     const createdate = now.toISOString().replace("T", " ").slice(0, 19);
-    const isBkash = rawMethod.includes("bkash");
+    const isBkash = pathStr.includes("bkash") || rawMethod.includes("bkash");
     const payName = isBkash ? "BKASH" : "NAGAD";
     // Primary: 2202 for BKASH, 2201 for NAGAD
     const payType = isBkash ? "2202" : "2201";
@@ -695,17 +779,23 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
     const secretKey = "87a89555480aae027ad84daf666602d7";
     const apiUrl = "https://mch.go-pay.cyou/pay.php";
 
-    const candidatePayTypes = ["2201", "2202", "1001", "1002"];
+    const candidatePayTypes = isBkash
+      ? ["2202", "2200", "101", "201", "801", "901", "1001", "1101", "1201", "2001", "2101", "2301", "3001"]
+      : ["2201", "102", "202", "802", "902", "1002", "1102", "1202", "2002", "2102", "2302", "3002"];
     let cashierUrl = "";
     let lastErrorMsg = "FAIL";
+    let finalSuccessfulSerial = serial;
 
-    for (const pType of candidatePayTypes) {
+    for (let i = 0; i < candidatePayTypes.length; i++) {
+      const pType = candidatePayTypes[i];
+      const attemptSerial = i === 0 ? serial : `${serial}R${i}`;
+
       const postData: Record<string, string> = {
         version: "1.0",
         app_id,
         notify_url: notifyURL,
         page_url: jumpURL,
-        mch_order_no: serial,
+        mch_order_no: attemptSerial,
         pay_type: pType,
         trade_amount: String(amount),
         order_date: createdate,
@@ -726,7 +816,7 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
       postData.sign_type = "MD5";
 
       try {
-        console.log(`[GOPAY PAY] Attempting gateway with pay_type=${pType}, goods_name=${payName}`);
+        console.log(`[GOPAY PAY] Attempting gateway with pay_type=${pType}, goods_name=${payName}, order_no=${attemptSerial}`);
         const gopayRes = await fetch(apiUrl, {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -738,12 +828,48 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
 
         if (resJson && resJson.respCode === "SUCCESS" && resJson.payInfo) {
           cashierUrl = resJson.payInfo;
+          finalSuccessfulSerial = attemptSerial;
           break;
         } else if (resJson?.tradeMsg) {
           lastErrorMsg = resJson.tradeMsg;
         }
       } catch (postErr) {
         console.warn(`[GOPAY PAY] Gateway attempt failed for ${pType}:`, postErr);
+      }
+    }
+
+    if (cashierUrl && finalSuccessfulSerial !== serial) {
+      try {
+        const adminApp = getFirebaseAdmin();
+        if (adminApp) {
+          const db = adminApp.firestore();
+          const altRecord = {
+            id: finalSuccessfulSerial,
+            order_no: finalSuccessfulSerial,
+            orderId: finalSuccessfulSerial,
+            depositNo: finalSuccessfulSerial,
+            serialNo: finalSuccessfulSerial,
+            originalSerial: serial,
+            uid,
+            amount,
+            finalCredit,
+            method: isBkash ? "bkash" : "nagad",
+            gateway: "gopay",
+            status: "pending",
+            timestamp: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            displayAmount: amount,
+            description: `ডিপোজিট রিকোয়েস্ট ${amount} টাকা (${payName} GOPay)`
+          };
+          saveLocalTransaction(altRecord);
+          await Promise.all([
+            db.collection("deposits").doc(finalSuccessfulSerial).set(altRecord, { merge: true }),
+            db.collection("transactions").doc(finalSuccessfulSerial).set(altRecord, { merge: true }),
+            db.collection("users").doc(uid).collection("history").doc(finalSuccessfulSerial).set(altRecord, { merge: true })
+          ]);
+        }
+      } catch (e) {
+        console.warn("[GOPAY PAY] Alt record save warning:", e);
       }
     }
 
