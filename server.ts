@@ -631,9 +631,11 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
     const payType = isBkash ? "2202" : "2201";
 
     const notifyURL = `${origin}/pay1/gopay_notify.php`;
-    let jumpURL = `https://sn777.site/#/wallet/RechargeHistory`;
+    let jumpURL = `${origin}/#/wallet/RechargeHistory`;
     if (rawData.return_url || rawData.page_url || rawData.redirect_url) {
       jumpURL = String(rawData.return_url || rawData.page_url || rawData.redirect_url);
+    } else if (req.headers.referer && req.headers.referer.includes("sn777.site")) {
+      jumpURL = `https://sn777.site/#/wallet/RechargeHistory`;
     }
 
     // 100% bonus for deposit >= 550
@@ -644,17 +646,28 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
       const adminApp = getFirebaseAdmin();
       if (adminApp) {
         const db = adminApp.firestore();
-        // We will fetch user profile and save to DB in the background
+        let phone = "01700000000";
+        let username = "unknown";
+
+        try {
+          const userDoc = await db.collection("users").doc(uid).get();
+          if (userDoc.exists) {
+            const uData = userDoc.data();
+            phone = uData?.phone || phone;
+            username = uData?.username || username;
+          }
+        } catch (e) {}
+
         const isoTimestamp = new Date().toISOString();
-        const depRecord: any = {
+        const depRecord = {
           id: serial,
           order_no: serial,
           orderId: serial,
           depositNo: serial,
           serialNo: serial,
           uid,
-          phone: "01700000000",
-          username: "unknown",
+          username,
+          phone,
           amount,
           finalCredit,
           method: isBkash ? "bkash" : "nagad",
@@ -666,30 +679,13 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
           description: `ডিপোজিট রিকোয়েস্ট ${amount} টাকা (${payName} GOPay)`
         };
 
-        // Do not await ANY Firestore reads/writes to significantly reduce response time for users
-        (async () => {
-          try {
-            const userDoc = await db.collection("users").doc(uid).get();
-            if (userDoc.exists) {
-              const uData = userDoc.data();
-              if (uData?.phone) depRecord.phone = uData.phone;
-              if (uData?.username) depRecord.username = uData.username;
-            }
-            saveLocalTransaction(depRecord);
-            await Promise.all([
-              db.collection("deposits").doc(serial).set(depRecord, { merge: true }),
-              db.collection("transactions").doc(serial).set(depRecord, { merge: true }),
-              db.collection("users").doc(uid).collection("history").doc(serial).set(depRecord, { merge: true })
-            ]);
-            console.log(`[GOPAY PAY] Deposit pending record created in Firestore (background) & Local with Order ID: ${serial}`);
-          } catch (err: any) {
-            if (err.code === 8 || (err.message && err.message.includes('Quota exceeded'))) {
-              console.warn(`[GOPAY PAY] Firestore Quota Exceeded. Saved locally only for Order ID: ${serial}`);
-            } else {
-              console.warn("[GOPAY PAY] Background DB record error:", err.message || err);
-            }
-          }
-        })();
+        saveLocalTransaction(depRecord);
+        await Promise.all([
+          db.collection("deposits").doc(serial).set(depRecord, { merge: true }),
+          db.collection("transactions").doc(serial).set(depRecord, { merge: true }),
+          db.collection("users").doc(uid).collection("history").doc(serial).set(depRecord, { merge: true })
+        ]);
+        console.log(`[GOPAY PAY] Deposit pending record created in Firestore & Local with Order ID: ${serial}`);
       }
     } catch (dbErr) {
       console.warn("[GOPAY PAY] DB record error:", dbErr);
@@ -699,8 +695,7 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
     const secretKey = "87a89555480aae027ad84daf666602d7";
     const apiUrl = "https://mch.go-pay.cyou/pay.php";
 
-    // Prioritize the matching pay types to minimize external API roundtrips
-    const candidatePayTypes = isBkash ? ["2202", "1002", "2201", "1001"] : ["2201", "1001", "2202", "1002"];
+    const candidatePayTypes = ["2201", "2202", "1001", "1002"];
     let cashierUrl = "";
     let lastErrorMsg = "FAIL";
 
