@@ -1,0 +1,11 @@
+{
+  "projectId": "xbet-mobcash",
+  "appId": "1:777668182207:web:c61039ace249deebae460a",
+  "apiKey": "AIzaSyAnjT1kOKf0WioVow4gQv63KUjIycn2FWI",
+  "authDomain": "xbet-mobcash.firebaseapp.com",
+  "databaseURL": "https://xbet-mobcash-default-rtdb.firebaseio.com",
+  "storageBucket": "xbet-mobcash.firebasestorage.app",
+  "messagingSenderId": "777668182207",
+  "measurementId": "",
+  "recaptchaSiteKey": ""
+}
