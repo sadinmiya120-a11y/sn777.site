@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover" />
+    <title>Sn777.top - Premium Gaming Portal</title>
+    <meta name="description" content="Sn777.top অ্যাপে জয়েন করুন এবং ৭৭৭ টাকা বোনাস পান! রেজিস্ট্রেশন করে আজই খেলা শুরু করুন।" />
+    
+    <!-- PWA & Mobile Meta Tags -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#0a0e1a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Sn777.top" />
+    <link rel="apple-touch-icon" href="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgb5oKSfVei2lIiOLewTPVVES1KI5VX0lLd5hyphenhyphenwXImIDb3lGmEHj2B-BAagrvZ00scvGmVQinhv1YvWxLNRpPkMSSw-XSgKU1lyTOSJMPWwEKuo5K7WeRaDsF0IdA2fqvjNPpy0J3BKi9L9yxY3OQfaZRS_OARVdHBnN0VGExMn77dxLwxPCPNn-gTqvp_H/s1290/Gallery_1783869640543.png" />
+    <link rel="icon" type="image/png" href="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgb5oKSfVei2lIiOLewTPVVES1KI5VX0lLd5hyphenhyphenwXImIDb3lGmEHj2B-BAagrvZ00scvGmVQinhv1YvWxLNRpPkMSSw-XSgKU1lyTOSJMPWwEKuo5K7WeRaDsF0IdA2fqvjNPpy0J3BKi9L9yxY3OQfaZRS_OARVdHBnN0VGExMn77dxLwxPCPNn-gTqvp_H/s1290/Gallery_1783869640543.png" />
+
+    <style>
+      /* Smooth responsive base styles for all screen sizes (Mobile, Tablet, Laptop, Desktop) */
+      html, body {
+        width: 100%;
+        min-height: 100%;
+        min-height: 100dvh;
+        margin: 0;
+        padding: 0;
+        background-color: #0b0f19;
+        -webkit-text-size-adjust: 100%;
+        overflow-x: hidden;
+      }
+      #root {
+        width: 100%;
+        min-height: 100dvh;
+        display: flex;
+        flex-direction: column;
+      }
+      /* Custom scrollbar */
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+    </style>
+
+    <script type="text/javascript">
+      // Global PWA Event Capturing
+      window.deferredPrompt = null;
+      window.addEventListener('beforeinstallprompt', function(e) {
+        e.preventDefault();
+        window.deferredPrompt = e;
+        console.log("Global beforeinstallprompt event captured!");
+        var event = new CustomEvent('pwaPromptReady', { detail: e });
+        window.dispatchEvent(event);
+      });
+      window.addEventListener('appinstalled', function() {
+        window.deferredPrompt = null;
+        console.log("App was successfully installed!");
+      });
+
+      // Check if we are inside an iframe (like AI Studio preview)
+      var isIframeDev = false;
+      try {
+        isIframeDev = window.self !== window.top;
+      } catch (e) {
+        isIframeDev = true;
+      }
+
+      if ('serviceWorker' in navigator && !isIframeDev) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('/sw.js')
+            .then(function(reg) {
+              console.log('PWA Service Worker registered successfully with scope: ', reg.scope);
+              
+              // Check for updates periodically or on load
+              reg.update();
+
+              // Auto-reload when new service worker activates
+              reg.addEventListener('updatefound', function() {
+                var installingWorker = reg.installing;
+                if (installingWorker) {
+                  installingWorker.addEventListener('statechange', function() {
+                    if (installingWorker.state === 'activated') {
+                      console.log('New Service Worker activated! Reloading to apply changes...');
+                      window.location.reload();
+                    }
+                  });
+                }
+              });
+            })
+            .catch(function(err) {
+              console.error('PWA Service Worker registration failed: ', err);
+            });
+
+          // Detect active service worker changing and reload
+          var refreshing = false;
+          navigator.serviceWorker.addEventListener('controllerchange', function() {
+            if (!refreshing) {
+              refreshing = true;
+              console.log('Service worker controller changed. Reloading page...');
+              window.location.reload();
+            }
+          });
+        });
+      }
+    </script>
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="SN777 - Premium Gaming Portal" />
+    <meta property="og:description" content="SN777 অ্যাপে জয়েন করুন এবং ৭৭৭ টাকা বোনাস পান! রেজিস্ট্রেশন করে আজই খেলা শুরু করুন।" />
+    <link rel="preload" as="image" href="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgb5oKSfVei2lIiOLewTPVVES1KI5VX0lLd5hyphenhyphenwXImIDb3lGmEHj2B-BAagrvZ00scvGmVQinhv1YvWxLNRpPkMSSw-XSgKU1lyTOSJMPWwEKuo5K7WeRaDsF0IdA2fqvjNPpy0J3BKi9L9yxY3OQfaZRS_OARVdHBnN0VGExMn77dxLwxPCPNn-gTqvp_H/s1290/Gallery_1783869640543.png" />
+    <script type="text/javascript">
+      var isInIframe = false;
+      try {
+        isInIframe = window.self !== window.top;
+      } catch (e) {
+        isInIframe = true;
+      }
+
+      if (isInIframe) {
+        console.log("Iframe detected - Tawk.to disabled to prevent cross-origin errors.");
+        window.Tawk_API = {
+          isMock: true,
+          hideWidget: function() {},
+          showWidget: function() {},
+          maximize: function() {},
+          minimize: function() {},
+          toggle: function() {},
+          setAttributes: function() {},
+          visitor: {},
+          onLoad: function() {}
+        };
+      } else {
+        var Tawk_API = Tawk_API || {};
+        var Tawk_LoadStart = new Date();
+
+        // Synchronously retrieve cached visitor identity before Tawk connects
+        try {
+          var cached = localStorage.getItem('sn777_cached_visitor');
+          if (cached) {
+            var parsed = JSON.parse(cached);
+            if (parsed && parsed.username) {
+              Tawk_API.visitor = {
+                name: parsed.username,
+                email: parsed.email || ''
+              };
+            }
+          }
+        } catch (e) {
+          console.warn("Tawk local cache retrieval failed:", e);
+        }
+
+        Tawk_API.onLoad = function() {
+          // Widget loaded
+        };
+
+        Tawk_API.customStyle = {
+          visibility: {
+            desktop: {
+              position: 'tr',
+              xOffset: 10,
+              yOffset: 50
+            },
+            mobile: {
+              position: 'tr',
+              xOffset: 10,
+              yOffset: 50
+            }
+          }
+        };
+
+        // Add Tawk.to Script Loader
+        (function(){
+          var s1=document.createElement("script"),s0=document.getElementsByTagName("script")[0];
+          s1.async=true;
+          // REPLACE YOUR_PROPERTY_ID WITH YOUR ACTUAL TAWK.TO PROPERTY ID
+          s1.src='https://embed.tawk.to/YOUR_PROPERTY_ID/default';
+          s1.charset='UTF-8';
+          s1.setAttribute('crossorigin','*');
+          s0.parentNode.insertBefore(s1,s0);
+        })();
+      }
+    </script>
+    <script type="text/javascript">
+      window.startPaymentVerification = function(orderNo, transactionId, amount, finalCredit, setUserState, onDone) {
+        // Create overlay element if it doesn't exist
+        let overlay = document.getElementById("payment-verify-overlay");
+        if (!overlay) {
+          overlay = document.createElement("div");
+          overlay.id = "payment-verify-overlay";
+          overlay.className = "fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm";
+          document.body.appendChild(overlay);
+        }
+        
+        // Set initial HTML with 5-second countdown
+        overlay.innerHTML = `
+          <div class="bg-[#14233c] text-white rounded-[2rem] w-full max-w-sm overflow-hidden flex flex-col items-center p-8 relative shadow-2xl border border-white/10" style="font-family: system-ui, -apple-system, sans-serif;">
+            <div class="mb-6 flex items-center justify-center">
+               <div class="relative w-24 h-24 flex items-center justify-center">
+                  <div class="absolute inset-0 rounded-full border-4 border-blue-500/20 border-t-blue-500" style="animation: spin 1s linear infinite; border-radius: 50%;"></div>
+                  <span id="verify-countdown-num" class="text-3xl font-black text-blue-400">5</span>
+               </div>
+            </div>
+            <h2 id="verify-title" class="text-xl font-black text-blue-400 mb-3 text-center">পেমেন্ট যাচাই করা হচ্ছে</h2>
+            <p id="verify-desc" class="text-slate-300 text-center font-semibold leading-relaxed mb-6 text-sm">
+               অনুগ্রহ করে ৫ সেকেন্ড অপেক্ষা করুন, আপনার ট্রানজ্যাকশন আইডি ও GOPay পেমেন্ট যাচাই করা হচ্ছে...
+            </p>
+            <button id="verify-action-btn" class="w-full bg-[#006e47] text-white h-12 rounded-xl font-black text-md hover:bg-opacity-90 active:scale-95 transition-all shadow-lg flex items-center justify-center" style="display: none;">
+               গেমে ফিরে যান
+            </button>
+          </div>
+          <style>
+            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+          </style>
+        `;
+
+        const countdownNumEl = document.getElementById("verify-countdown-num");
+        const titleEl = document.getElementById("verify-title");
+        const descEl = document.getElementById("verify-desc");
+        const btnEl = document.getElementById("verify-action-btn");
+        
+        let timeLeft = 5;
+        let isVerified = false;
+        let verificationChecked = false;
+
+        // Function to query backend for verification
+        async function checkPaymentStatus() {
+          try {
+            const response = await fetch("/api/verify-payment", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ order_no: orderNo, transactionId: transactionId })
+            });
+            const data = await response.json();
+            if (data.success) {
+              isVerified = true;
+              // Update local React state for user balance
+              if (setUserState && data.finalCredit) {
+                setUserState(prev => {
+                  if (!prev) return prev;
+                  const currentBal = parseFloat(String(prev.balance || "0").replace(/,/g, ""));
+                  const newBal = (currentBal + Number(data.finalCredit)).toFixed(2);
+                  return {
+                    ...prev,
+                    balance: newBal,
+                    totalDeposited: parseFloat(String(prev.totalDeposited || "0")) + Number(amount),
+                    approvedDepositsCount: Number(prev.approvedDepositsCount || 0) + 1
+                  };
+                });
+              }
+            }
+          } catch (e) {
+            console.error("Error verifying payment:", e);
+          }
+          verificationChecked = true;
+        }
+
+        // Start background verification check immediately
+        checkPaymentStatus();
+
+        const timer = setInterval(() => {
+          timeLeft--;
+          if (timeLeft > 0) {
+            if (countdownNumEl) countdownNumEl.textContent = timeLeft;
+          } else {
+            clearInterval(timer);
+            handleFinishedCountdown();
+          }
+        }, 1000);
+
+        function handleFinishedCountdown() {
+          // If not checked yet, wait a tiny bit
+          if (!verificationChecked) {
+            setTimeout(handleFinishedCountdown, 500);
+            return;
+          }
+
+          if (isVerified) {
+            // Show gorgeous success state
+            titleEl.className = "text-xl font-black text-green-400 mb-3 text-center";
+            titleEl.textContent = "পেমেন্ট সফল হয়েছে!";
+            descEl.textContent = `অভিনন্দন! আপনার ${amount} টাকা পেমেন্ট (বোনাস সহ মোট ৳${finalCredit}) সফলভাবে যাচাই করা হয়েছে এবং ব্যালেন্স যোগ হয়েছে।`;
+            
+            // Update icon to green checkmark
+            const iconParent = countdownNumEl.parentNode;
+            if (iconParent) {
+              iconParent.innerHTML = `
+                <div class="w-20 h-20 bg-green-500/10 rounded-full flex items-center justify-center text-green-500 text-5xl" style="border-radius: 50%;">✓</div>
+              `;
+            }
+          } else {
+            // Show pending state
+            titleEl.className = "text-xl font-black text-yellow-500 mb-3 text-center";
+            titleEl.textContent = "পেমেন্ট পেন্ডিং রয়েছে";
+            descEl.textContent = "আপনার পেমেন্ট রিকোয়েস্টটি পেন্ডিং অবস্থায় আছে। আমাদের অ্যাডমিন দ্রুত এটি যাচাই করে ৫ মিনিটের মধ্যে ব্যালেন্স যোগ করে দেবে।";
+            
+            // Update icon to warning clock
+            const iconParent = countdownNumEl.parentNode;
+            if (iconParent) {
+              iconParent.innerHTML = `
+                <div class="w-20 h-20 bg-yellow-500/10 rounded-full flex items-center justify-center text-yellow-500 text-5xl" style="border-radius: 50%;">⏳</div>
+              `;
+            }
+          }
+
+          // Show action button
+          btnEl.style.display = "flex";
+          btnEl.onclick = function() {
+            // Remove overlay
+            overlay.remove();
+            if (onDone) onDone();
+            if (window.autoRedirectTimer) {
+              clearTimeout(window.autoRedirectTimer);
+            }
+          };
+
+          // Automatically close overlay and return to game after 5 seconds
+          let redirectSeconds = 5;
+          btnEl.innerHTML = `গেমে ফিরে যান (${redirectSeconds}s)`;
+          
+          const autoTimer = setInterval(() => {
+            redirectSeconds--;
+            if (redirectSeconds > 0) {
+              btnEl.innerHTML = `গেমে ফিরে যান (${redirectSeconds}s)`;
+            } else {
+              clearInterval(autoTimer);
+            }
+          }, 1000);
+
+          window.autoRedirectTimer = setTimeout(() => {
+            clearInterval(autoTimer);
+            overlay.remove();
+            if (onDone) onDone();
+            // Also clean URL to prevent re-triggering verification overlay on reload
+            try {
+              const url = new URL(window.location.href);
+              url.searchParams.delete("m");
+              url.searchParams.delete("order_no");
+              window.history.replaceState({}, document.title, url.pathname);
+            } catch (e) {
+              console.error(e);
+            }
+          }, 5000);
+        }
+      };
+    </script>
+    <script type="module" crossorigin src="/assets/index-sn777-v5.js?v=1787725775180"></script>
+
+    <link rel="stylesheet" crossorigin href="/assets/index-C0XgLZC6-v3.css">
+  
+    <script>
+      // Clear old caches & update SW immediately
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for (let registration of registrations) {
+            registration.update();
+          }
+        });
+      }
+      if ("caches" in window) {
+        caches.keys().then(function(names) {
+          for (let name of names) {
+            if (name.includes("v4") || name.includes("v3") || name.includes("v1") || name.includes("v2")) {
+              caches.delete(name);
+            }
+          }
+        });
+      }
+    </script>
+  
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+
