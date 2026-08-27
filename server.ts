@@ -631,11 +631,9 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
     const payType = isBkash ? "2202" : "2201";
 
     const notifyURL = `${origin}/pay1/gopay_notify.php`;
-    let jumpURL = `${origin}/#/wallet/RechargeHistory`;
+    let jumpURL = `https://sn777.site/#/wallet/RechargeHistory`;
     if (rawData.return_url || rawData.page_url || rawData.redirect_url) {
       jumpURL = String(rawData.return_url || rawData.page_url || rawData.redirect_url);
-    } else if (req.headers.referer && req.headers.referer.includes("sn777.site")) {
-      jumpURL = `https://sn777.site/#/wallet/RechargeHistory`;
     }
 
     // 100% bonus for deposit >= 550
@@ -684,8 +682,12 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
               db.collection("users").doc(uid).collection("history").doc(serial).set(depRecord, { merge: true })
             ]);
             console.log(`[GOPAY PAY] Deposit pending record created in Firestore (background) & Local with Order ID: ${serial}`);
-          } catch (err) {
-            console.warn("[GOPAY PAY] Background DB record error:", err);
+          } catch (err: any) {
+            if (err.code === 8 || (err.message && err.message.includes('Quota exceeded'))) {
+              console.warn(`[GOPAY PAY] Firestore Quota Exceeded. Saved locally only for Order ID: ${serial}`);
+            } else {
+              console.warn("[GOPAY PAY] Background DB record error:", err.message || err);
+            }
           }
         })();
       }
