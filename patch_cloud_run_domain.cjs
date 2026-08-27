@@ -14,27 +14,24 @@ jsFiles.forEach(filePath => {
   if (!fs.existsSync(filePath)) return;
   let code = fs.readFileSync(filePath, "utf8");
 
-  // Replace any existing unsafe fetch override from previous patches
-  code = code.replace(
-    /window\.fetch\s*=\s*function\(input,\s*init\)\s*\{([\s\S]*?)\};/g,
-    `if (origFetch) { var customFetch = function(input, init) { $1 }; try { window.fetch = customFetch; } catch(e) { try { Object.defineProperty(window, "fetch", { value: customFetch, writable: true, configurable: true, enumerable: true }); } catch(err) {} } }`
-  );
+  // Remove any old/existing isLocalOrRunApp block to avoid duplicates and replace with safe version
+  code = code.replace(/\(function\(\)\s*\{\s*if\s*\(typeof\s*window\s*!==\s*"undefined"\)\s*\{\s*var\s*isLocalOrRunApp[\s\S]*?\}\s*\}\)\(\);?\s*/g, "");
 
-  // If not already injected at top of JS bundle
-  if (!code.includes("window.BACKEND_API_BASE")) {
-    const headerCode = `
+  const headerCode = `
 (function() {
   if (typeof window !== "undefined") {
     var isLocalOrRunApp = window.location.hostname.includes("run.app") || window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-    window.BACKEND_API_BASE = isLocalOrRunApp ? "" : "${BACKEND_URL}";
+    try {
+      window.BACKEND_API_BASE = isLocalOrRunApp ? "" : "${BACKEND_URL}";
+    } catch(e) {}
     
     var origFetch = window.fetch;
     if (origFetch) {
       var customFetch = function(input, init) {
         if (typeof input === "string") {
-          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
+          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/") || input.includes("gopay_pay.php")) {
             if (window.BACKEND_API_BASE) {
-              input = window.BACKEND_API_BASE + input;
+              input = window.BACKEND_API_BASE + (input.startsWith("/") ? "" : "/") + input;
             }
           }
         }
@@ -44,17 +41,21 @@ jsFiles.forEach(filePath => {
         window.fetch = customFetch;
       } catch (e) {
         try {
-          Object.defineProperty(window, "fetch", { value: customFetch, writable: true, configurable: true, enumerable: true });
+          Object.defineProperty(window, "fetch", {
+            value: customFetch,
+            writable: true,
+            configurable: true,
+            enumerable: true
+          });
         } catch (err) {
-          console.warn("[Auth Proxy Client Patch Warning] Failed to patch window.fetch:", err);
+          console.warn("[Auth Proxy Client Patch Warning] Failed to patch window.fetch via DefineProperty:", err);
         }
       }
     }
   }
 })();
 `;
-    code = headerCode + code;
-  }
+  code = headerCode + code;
 
   // 1. Direct hardcoded fallback if BACKEND_API_BASE is undefined in any context
   code = code.replace(
