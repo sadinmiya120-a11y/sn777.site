@@ -29,9 +29,10 @@ jsFiles.forEach(filePath => {
     if (origFetch) {
       var customFetch = function(input, init) {
         if (typeof input === "string") {
-          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/") || input.includes("gopay_pay.php")) {
+          // ONLY prepend if it is a relative path AND doesn't already have the domain
+          if ((input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) && !input.startsWith("http")) {
             if (window.BACKEND_API_BASE) {
-              input = window.BACKEND_API_BASE + (input.startsWith("/") ? "" : "/") + input;
+              input = window.BACKEND_API_BASE + input;
             }
           }
         }
@@ -57,29 +58,21 @@ jsFiles.forEach(filePath => {
 `;
   code = headerCode + code;
 
+  // Collapse repeated domains (Cleanup)
+  code = code.replace(/(https:\/\/sn777\.site)+/g, BACKEND_URL);
+  
   // 1. Direct hardcoded fallback if BACKEND_API_BASE is undefined in any context
+  // Use a temporary marker to ensure idempotency
   code = code.replace(
     /\$\{window\.BACKEND_API_BASE\|\|""\}\/gopay_pay\.php/g,
     '${(typeof window!=="undefined"&&window.BACKEND_API_BASE)?window.BACKEND_API_BASE:"' + BACKEND_URL + '"}/gopay_pay.php'
   );
-  code = code.replace(
-    /\/gopay_pay\.php\?uid=/g,
-    BACKEND_URL + '/gopay_pay.php?uid='
-  );
 
-  // 2. Also ensure any /gopay_pay.php strings directly use the full Cloud Run backend URL
-  code = code.replace(
-    /`\/gopay_pay\.php/g,
-    '`' + BACKEND_URL + '/gopay_pay.php'
-  );
-  code = code.replace(
-    /"\/gopay_pay\.php"/g,
-    '"' + BACKEND_URL + '/gopay_pay.php"'
-  );
-  code = code.replace(
-    /'\/gopay_pay\.php'/g,
-    "'" + BACKEND_URL + "/gopay_pay.php'"
-  );
+  // Normalize all occurrences to absolute URLs safely
+  // First, find all /gopay_pay.php and ensure they are absolute, but only if they are not already
+  // We can do this by first removing the domain if it exists, then adding it.
+  code = code.replace(/https:\/\/sn777\.site\/gopay_pay\.php/g, "/gopay_pay.php");
+  code = code.replace(/\/gopay_pay\.php/g, BACKEND_URL + "/gopay_pay.php");
 
   try {
     esbuild.transformSync(code, { loader: "js" });
