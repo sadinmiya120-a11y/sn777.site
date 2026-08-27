@@ -658,22 +658,25 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
           }
         } catch (e) {}
 
+        const isoTimestamp = new Date().toISOString();
         const depRecord = {
           id: serial,
           order_no: serial,
+          orderId: serial,
+          depositNo: serial,
+          serialNo: serial,
           uid,
           username,
           phone,
           amount,
           finalCredit,
           method: isBkash ? "bkash" : "nagad",
+          gateway: "gopay",
           status: "pending",
-          timestamp: createdate,
-          createdAt: createdate,
-          depositNo: serial,
-          serialNo: serial,
+          timestamp: isoTimestamp,
+          createdAt: isoTimestamp,
           displayAmount: amount,
-          description: `ডিপোজিট রিকোয়েস্ট ${amount} টাকা (${payName})`
+          description: `ডিপোজিট রিকোয়েস্ট ${amount} টাকা (${payName} GOPay)`
         };
 
         saveLocalTransaction(depRecord);
@@ -682,6 +685,7 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
           db.collection("transactions").doc(serial).set(depRecord, { merge: true }),
           db.collection("users").doc(uid).collection("history").doc(serial).set(depRecord, { merge: true })
         ]);
+        console.log(`[GOPAY PAY] Deposit pending record created in Firestore & Local with Order ID: ${serial}`);
       }
     } catch (dbErr) {
       console.warn("[GOPAY PAY] DB record error:", dbErr);
