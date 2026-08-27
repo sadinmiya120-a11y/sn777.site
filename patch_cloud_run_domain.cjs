@@ -23,67 +23,21 @@ jsFiles.forEach(filePath => {
     window.BACKEND_API_BASE = isLocalOrRunApp ? "" : "${BACKEND_URL}";
     
     var origFetch = window.fetch;
-    if (typeof origFetch === "function") {
-      var customFetch = function(input, init) {
-        if (typeof input === "string") {
-          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
-            if (window.BACKEND_API_BASE) {
-              input = window.BACKEND_API_BASE + input;
-            }
+    window.fetch = function(input, init) {
+      if (typeof input === "string") {
+        if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
+          if (window.BACKEND_API_BASE) {
+            input = window.BACKEND_API_BASE + input;
           }
         }
-        return origFetch.call(this, input, init);
-      };
-      try {
-        Object.defineProperty(window, "fetch", {
-          value: customFetch,
-          writable: true,
-          configurable: true,
-          enumerable: true
-        });
-      } catch (e) {
-        try { window.fetch = customFetch; } catch (err) {}
       }
-    }
+      return origFetch.call(this, input, init);
+    };
   }
 })();
 `;
     code = headerCode + code;
   }
-
-  // Replace any old unsafe window.fetch assignment in injected header
-  code = code.replace(
-    /var origFetch = window\.fetch;\s*window\.fetch = function\(input, init\) \{[\s\S]*?return origFetch\.call\(this, input, init\);\s*\};/g,
-    `var origFetch = window.fetch;
-    if (typeof origFetch === "function") {
-      var customFetch = function(input, init) {
-        if (typeof input === "string") {
-          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
-            if (window.BACKEND_API_BASE) {
-              input = window.BACKEND_API_BASE + input;
-            }
-          }
-        }
-        return origFetch.call(this, input, init);
-      };
-      try {
-        Object.defineProperty(window, "fetch", {
-          value: customFetch,
-          writable: true,
-          configurable: true,
-          enumerable: true
-        });
-      } catch (e) {
-        try { window.fetch = customFetch; } catch (err) {}
-      }
-    }`
-  );
-
-  // Replace any unsafe try{window.fetch=t} in minified code
-  code = code.replace(
-    "try{window.fetch=t}catch{try{Object.defineProperty(window,\"fetch\",{value:t,writable:!0,configurable:!0,enumerable:!0})}catch(a){console.warn(\"[Auth Proxy Client Patch Warning] Failed to patch window.fetch via DefineProperty:\",a)}}",
-    "try{Object.defineProperty(window,\"fetch\",{value:t,writable:!0,configurable:!0,enumerable:!0})}catch(a){try{window.fetch=t}catch(err){console.warn(\"[Auth Proxy Client Patch Warning] Failed to patch window.fetch via DefineProperty:\",a)}}"
-  );
 
   // 1. Direct hardcoded fallback if BACKEND_API_BASE is undefined in any context
   code = code.replace(
