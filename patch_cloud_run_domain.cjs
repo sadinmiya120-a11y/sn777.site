@@ -19,8 +19,7 @@ jsFiles.forEach(filePath => {
     const headerCode = `
 (function() {
   if (typeof window !== "undefined") {
-    var isLocalOrRunApp = window.location.hostname.includes("run.app") || window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-    window.BACKEND_API_BASE = isLocalOrRunApp ? "" : "${BACKEND_URL}";
+    window.BACKEND_API_BASE = "";
     
     var origFetch = window.fetch;
     if (typeof origFetch === "function") {
@@ -67,6 +66,30 @@ jsFiles.forEach(filePath => {
   }
   code = code.replace(/ee=L\?500:300/g, "ee=L?500:200");
   code = code.replace(/children:"৩০০ টাকা"\}/g, 'children:"২০০ টাকা"}');
+
+  // Replace window.location.assign("/gopay_pay.php...") with API fetch to avoid SPA route navigation error on sn777.site
+  const assignRegex = /window\.location\.assign\("\/gopay_pay\.php\?uid="\s*\+\s*encodeURIComponent\(([^)]+)\)\s*\+\s*"&amount="\s*\+\s*encodeURIComponent\(([^)]+)\)\s*\+\s*"&method="\s*\+\s*encodeURIComponent\(([^)]+)\)\s*\+\s*"&order_no="\s*\+\s*encodeURIComponent\(([^)]+)\)\)/g;
+  const assignReplacement = `(async function() {
+    var _payUrl = "/api/gopay_pay?uid=" + encodeURIComponent($1) + "&amount=" + encodeURIComponent($2) + "&method=" + encodeURIComponent($3) + "&order_no=" + encodeURIComponent($4);
+    if (window.BACKEND_API_BASE) {
+      _payUrl = window.BACKEND_API_BASE + _payUrl;
+    }
+    try {
+      var _res = await fetch(_payUrl, { headers: { "Accept": "application/json" } });
+      var _data = await _res.json();
+      if (_data && (_data.redirect_url || _data.payInfo)) {
+        window.location.href = _data.redirect_url || _data.payInfo;
+        return;
+      } else if (_data && _data.error) {
+        alert("পেমেন্ট এরর: " + _data.error);
+        return;
+      }
+    } catch (_e) {
+      console.error("GOPay fetch error:", _e);
+    }
+    window.location.href = _payUrl;
+  })()`;
+  code = code.replace(assignRegex, assignReplacement);
 
   try {
     esbuild.transformSync(code, { loader: "js" });

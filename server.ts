@@ -751,6 +751,9 @@ app.all(["/gopay_pay.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], asyn
       }
       return res.redirect(cashierUrl);
     } else {
+      if (req.headers.accept?.includes("application/json") || req.xhr) {
+        return res.status(400).json({ success: false, error: lastErrorMsg, message: lastErrorMsg });
+      }
       return res.status(400).send(`<h3>gopay API ERROR: ${lastErrorMsg}</h3>`);
     }
   } catch (err: any) {
