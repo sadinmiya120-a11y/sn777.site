@@ -61412,40 +61412,58 @@ function $z() {
                                                   className: "text-xs font-semibold leading-snug text-pink-50",
                                                   children: "পেমেন্ট পেজে সরাসরি যেতে নিচের বোতামে ক্লিক করুন:"
                                                 }),
-                                                o.jsx("button", {
-                                                  type: "button",
-                                                  onClick: () => {
-                                                    const storedUrl = localStorage.getItem("sn777_gopay_url");
-                                                    let targetUrl = storedUrl;
-                                                    if (!targetUrl) {
+                                                (() => {
+                                                    const storedUrl = typeof localStorage !== "undefined" ? localStorage.getItem("sn777_gopay_url") : null;
+                                                    let calcUrl = storedUrl;
+                                                    if (!calcUrl) {
                                                       const fallbackGate = Be === "bkash" ? "https://checkout.gopay.cyou/pay/Bkash.php" : "https://checkout.gopay.cyou/pay/Nagad.php";
+                                                      let originUrl = typeof window !== "undefined" ? window.location.origin : "";
                                                       const p = new URLSearchParams({
                                                         api_key: "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc",
-                                                        uid: gt.currentUser ? gt.currentUser.uid : "user",
+                                                        uid: (gt && gt.currentUser) ? gt.currentUser.uid : "user",
                                                         amount: String(ys || "500"),
-                                                        order_no: Oi || ("ORD" + Date.now())
+                                                        order_no: Oi || ("ORD" + Date.now()),
+                                                        return_url: `${originUrl}/success`,
+                                                        success_url: `${originUrl}/success`,
+                                                        cancel_url: `${originUrl}/fail`,
+                                                        callback_url: `${originUrl}/api/gopay-callback`
                                                       });
-                                                      targetUrl = `${fallbackGate}?${p.toString()}`;
+                                                      calcUrl = `${fallbackGate}?${p.toString()}`;
                                                     }
-                                                    const win = window.open(targetUrl, "_blank");
-                                                    if (!win || win.closed || typeof win.closed === "undefined") {
-                                                      try {
-                                                        if (window.top && window.top !== window) {
-                                                          window.top.location.href = targetUrl;
-                                                        } else {
-                                                          window.location.href = targetUrl;
-                                                        }
-                                                      } catch(e) {
-                                                        window.location.href = targetUrl;
-                                                      }
-                                                    }
-                                                  },
-                                                  className: "w-full py-3 px-4 bg-white text-rose-700 font-black text-sm rounded-xl shadow-md hover:bg-rose-50 active:scale-[0.98] transition-all flex items-center justify-center gap-2 border-2 border-rose-200 cursor-pointer",
-                                                  children: [
-                                                    o.jsx(h4, { size: 18 }),
-                                                    "🔗 পেমেন্ট পেজে প্রবেশ করুন (Open Payment Link)"
-                                                  ]
-                                                }),
+                                                    return o.jsxs("div", {
+                                                      className: "space-y-2",
+                                                      children: [
+                                                        o.jsxs("a", {
+                                                          href: calcUrl,
+                                                          target: "_blank",
+                                                          rel: "noopener noreferrer",
+                                                          className: "w-full py-3 px-4 bg-white text-rose-700 font-black text-sm rounded-xl shadow-md hover:bg-rose-50 active:scale-[0.98] transition-all flex items-center justify-center gap-2 border-2 border-rose-200 cursor-pointer no-underline block text-center",
+                                                          children: [
+                                                            o.jsx(h4, { size: 18 }),
+                                                            "🔗 পেমেন্ট পেজে সরাসরি প্রবেশ করুন (Direct Link)"
+                                                          ]
+                                                        }),
+                                                        o.jsx("button", {
+                                                          type: "button",
+                                                          onClick: () => {
+                                                            try {
+                                                              if (window.top && window.top !== window) {
+                                                                window.top.location.href = calcUrl;
+                                                              } else {
+                                                                window.location.href = calcUrl;
+                                                              }
+                                                            } catch(e) {
+                                                              window.location.href = calcUrl;
+                                                            }
+                                                          },
+                                                          className: "w-full py-2 px-3 bg-pink-900/40 text-yellow-300 font-bold text-xs rounded-lg hover:bg-pink-900/60 transition-all flex items-center justify-center gap-1.5 border border-pink-400/30 cursor-pointer",
+                                                          children: [
+                                                            "⚡ মোবাইল ব্রাউজারে রিডাইরেক্ট করুন (Redirect Same Tab)"
+                                                          ]
+                                                        })
+                                                      ]
+                                                    });
+                                                  })(),
                                                 o.jsx("p", {
                                                   className: "text-[10px] text-pink-100 font-medium",
                                                   children: "অথবা নিচে দেখানো এজেন্ট নম্বরে ক্যাশ আউট/সেন্ড মানি করে ট্রানজ্যাকশন আইডি জমা দিন।"
