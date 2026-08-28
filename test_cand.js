@@ -60538,6 +60538,7 @@ function $z() {
           });
           try { localStorage.setItem("sn777_pending_order", JSON.stringify({ order_no: Te, amount: Number(E), time: Date.now() })); } catch(e) {}
         Le = `${jt}?${wt.toString()}`;
+        try { localStorage.setItem("sn777_gopay_url", Le); } catch(e) {}
       }
       xe(!0);
           document.querySelectorAll('input[name="username"], input[name="phone"], input[name="password"]').forEach(e => e.style.borderColor = "");
@@ -60603,7 +60604,27 @@ function $z() {
               description: `ডিপোজিট রিকোয়েস্ট ${E} টাকা (${Be.toUpperCase()})`,
             }),
           ]),
-            ye ? (window.location.href = Le) : Ls(!0),
+            (() => {
+              if (ye && Le) {
+                try {
+                  const win = window.open(Le, "_blank");
+                  if (!win || win.closed || typeof win.closed === "undefined") {
+                    try {
+                      if (window.top && window.top !== window) {
+                        window.top.location.href = Le;
+                      } else {
+                        window.location.href = Le;
+                      }
+                    } catch(e) {
+                      window.location.href = Le;
+                    }
+                  }
+                } catch(e) {
+                  console.warn("window.open popup error:", e);
+                }
+              }
+              Ls(!0);
+            })(),
             fi(""));
         } else throw new Error("ব্যবহারকারীর প্রোফাইল পাওয়া যায়নি।");
       } catch (Ne) {
@@ -60648,6 +60669,28 @@ function $z() {
         if (!gt.currentUser) return;
         const E = oi ? oi.trim() : "";
         if (E && !["binance", "usdt", "usdterc20"].includes(Be)) {
+          if (E.length < 8 || !/^[a-zA-Z0-9_-]+$/.test(E) || /^(.)\1+$/.test(E)) {
+            (Fe("ভুল বা ফেক ট্রানজ্যাকশন আইডি! দয়া করে সঠিক ট্রানজ্যাকশন আইডি প্রদান করুন।"),
+              Je(!0),
+              xe(!1));
+            return;
+          }
+          try {
+            const valRes = await fetch("/api/validate-manual-deposit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ uid: gt.currentUser.uid, transactionId: E, order_no: Oi, amount: ys })
+            });
+            const valData = await valRes.json();
+            if (!valRes.ok || !valData.success) {
+              (Fe(valData.error || "এই ট্রানজ্যাকশন আইডি ব্যবহার করা যাবে না।"),
+                Je(!0),
+                xe(!1));
+              return;
+            }
+          } catch (valErr) {
+            console.warn("Validation request warning:", valErr);
+          }
           const wt = hn(Ie, "deposits"),
             ft = In(wt, Qt("transactionId", "==", E)),
             Fn = await Gn(ft);
@@ -60658,14 +60701,15 @@ function $z() {
                 const bs = Rs.data();
                 (bs.status === "approved" ||
                   bs.status === "pending" ||
-                  bs.status === "success") &&
+                  bs.status === "success" ||
+                  bs.credited === true) &&
                   (Vn = !0);
               }
             }),
             Vn)
           ) {
             (Fe(
-              "এই ট্রানজ্যাকশন আইডি আগে ব্যবহৃত হয়েছে। অনুগ্রহ করে সঠিক ট্রানজ্যাকশন আইডি দিন।",
+              "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহৃত হয়েছে। একই আইডি দিয়ে পুনরায় টাকা যোগ করা সম্ভব নয়।",
             ),
               Je(!0),
               xe(!1));
@@ -61354,6 +61398,60 @@ function $z() {
                                         o.jsxs("div", {
                                           className: "space-y-4 pt-4",
                                           children: [
+                                            (Be === "bkash" || Be === "nagad") && o.jsxs("div", {
+                                              className: "bg-gradient-to-r from-pink-600 to-rose-600 rounded-2xl p-4 text-white shadow-lg space-y-2.5 text-center border border-pink-400/30 mb-2",
+                                              children: [
+                                                o.jsxs("div", {
+                                                  className: "flex items-center justify-center gap-1.5 font-black text-sm text-yellow-300 uppercase tracking-wide",
+                                                  children: [
+                                                    o.jsx(h4, { size: 18 }),
+                                                    "অটোমেটিক পেমেন্ট গেটওয়ে"
+                                                  ]
+                                                }),
+                                                o.jsx("p", {
+                                                  className: "text-xs font-semibold leading-snug text-pink-50",
+                                                  children: "পেমেন্ট পেজে সরাসরি যেতে নিচের বোতামে ক্লিক করুন:"
+                                                }),
+                                                o.jsx("button", {
+                                                  type: "button",
+                                                  onClick: () => {
+                                                    const storedUrl = localStorage.getItem("sn777_gopay_url");
+                                                    let targetUrl = storedUrl;
+                                                    if (!targetUrl) {
+                                                      const fallbackGate = Be === "bkash" ? "https://checkout.gopay.cyou/pay/Bkash.php" : "https://checkout.gopay.cyou/pay/Nagad.php";
+                                                      const p = new URLSearchParams({
+                                                        api_key: "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc",
+                                                        uid: gt.currentUser ? gt.currentUser.uid : "user",
+                                                        amount: String(ys || "500"),
+                                                        order_no: Oi || ("ORD" + Date.now())
+                                                      });
+                                                      targetUrl = `${fallbackGate}?${p.toString()}`;
+                                                    }
+                                                    const win = window.open(targetUrl, "_blank");
+                                                    if (!win || win.closed || typeof win.closed === "undefined") {
+                                                      try {
+                                                        if (window.top && window.top !== window) {
+                                                          window.top.location.href = targetUrl;
+                                                        } else {
+                                                          window.location.href = targetUrl;
+                                                        }
+                                                      } catch(e) {
+                                                        window.location.href = targetUrl;
+                                                      }
+                                                    }
+                                                  },
+                                                  className: "w-full py-3 px-4 bg-white text-rose-700 font-black text-sm rounded-xl shadow-md hover:bg-rose-50 active:scale-[0.98] transition-all flex items-center justify-center gap-2 border-2 border-rose-200 cursor-pointer",
+                                                  children: [
+                                                    o.jsx(h4, { size: 18 }),
+                                                    "🔗 পেমেন্ট পেজে প্রবেশ করুন (Open Payment Link)"
+                                                  ]
+                                                }),
+                                                o.jsx("p", {
+                                                  className: "text-[10px] text-pink-100 font-medium",
+                                                  children: "অথবা নিচে দেখানো এজেন্ট নম্বরে ক্যাশ আউট/সেন্ড মানি করে ট্রানজ্যাকশন আইডি জমা দিন।"
+                                                })
+                                              ]
+                                            }),
                                             o.jsxs("div", {
                                               className: "space-y-1.5",
                                               children: [
