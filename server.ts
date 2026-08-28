@@ -186,7 +186,7 @@ app.post("/api/update-username", async (req, res) => {
 });
 
 
-// --- ProPay Integration ---
+// --- GOPay Integration ---
 
 const TX_STORE_FILE = path.join(process.cwd(), "data", "transactions_store.json");
 
@@ -371,11 +371,11 @@ app.post("/api/create-payment", async (req, res) => {
     });
 
     const gateway_url = (method === 'bkash') 
-               ? 'https://checkout.propay.cyou/pay/Bkash.php' 
-               : 'https://checkout.propay.cyou/pay/Nagad.php';
+               ? 'https://checkout.gopay.cyou/pay/Bkash.php' 
+               : 'https://checkout.gopay.cyou/pay/Nagad.php';
 
     const params = new URLSearchParams({
-        api_key: process.env.PROPAY_API_KEY || '',
+        api_key: process.env.GOPAY_API_KEY || '',
         uid: uid,
         amount: amount.toString(),
         order_no: order_no,
@@ -593,92 +593,9 @@ app.get("/api/debug-project", (req, res) => {
   }
 });
 
-// ProPay Direct JSON Initiation API
-app.post(["/api/gopay-init", "/api/gopay/init"], async (req, res) => {
-  try {
-    const rawData = { ...req.query, ...req.body };
-    const uid = rawData.uid;
-    const amount = parseFloat(rawData.amount || rawData.trade_amount || 0);
-    const rawMethod = String(rawData.method || rawData.goods_name || "bkash").toLowerCase();
-    const isBkash = rawMethod.includes("bkash");
-    const payName = isBkash ? "BKASH" : "NAGAD";
-    const payType = isBkash ? "2202" : "2201";
-
-    if (!uid || isNaN(amount) || amount <= 0) {
-      return res.status(400).json({ success: false, error: "UID or Amount missing" });
-    }
-
-    const host = req.headers["x-forwarded-host"] || req.get("host") || "ais-dev-sxllemqiu46rogxyb2cm6w-552213914579.asia-east1.run.app";
-    const proto = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
-    const origin = `${proto}://${host}`;
-    const serial = String(rawData.order_no || rawData.mch_order_no || (
-      new Date().toISOString().slice(0, 10).replace(/-/g, "") +
-      Math.floor(Date.now() / 1000) +
-      Math.floor(100000 + Math.random() * 900000)
-    ));
-    const now = new Date();
-    const createdate = now.toISOString().replace("T", " ").slice(0, 19);
-
-    const app_id = "GP_97386700";
-    const secretKey = "87a89555480aae027ad84daf666602d7";
-    const apiUrl = "https://mch.go-pay.cyou/pay.php";
-
-    const postData: Record<string, string> = {
-      version: "1.0",
-      app_id,
-      notify_url: "https://sn777.site/pay1/gopay_notify.php",
-      page_url: "https://sn777.site/#/wallet/RechargeHistory",
-      mch_order_no: serial,
-      pay_type: payType,
-      trade_amount: String(Math.floor(amount)),
-      order_date: createdate,
-      goods_name: payName,
-      mch_return_msg: "OK"
-    };
-
-    const sortedKeys = Object.keys(postData).sort();
-    let signStr = "";
-    for (const k of sortedKeys) {
-      const v = postData[k];
-      if (v !== "" && v !== null && v !== undefined) {
-        signStr += `${k}=${v}&`;
-      }
-    }
-    signStr += `key=${secretKey}`;
-    const sign = crypto.createHash("md5").update(signStr).digest("hex");
-    postData.sign = sign;
-    postData.sign_type = "MD5";
-
-    const apiRes = await fetch(apiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(postData).toString()
-    });
-    const propayData: any = await apiRes.json();
-
-    if (propayData && propayData.respCode === "SUCCESS" && propayData.payInfo) {
-      return res.json({
-        success: true,
-        payInfo: propayData.payInfo,
-        order_no: serial,
-        method: isBkash ? "bkash" : "nagad",
-        pay_type: payType
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      error: propayData?.tradeMsg || "Failed to initialize payment",
-      respCode: propayData?.respCode
-    });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ProPay Payment Initiation Route (supports both PHP URL and API URL)
-app.all(["/propay_pay.php", "/propay_pay_bkash.php", "/api/propay_pay", "/api/propay-pay", "/pay.php"], async (req, res) => {
-  console.log(`[PROPAY PAY] Request received:`, {
+// GOPay Payment Initiation Route (supports both PHP URL and API URL)
+app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], async (req, res) => {
+  console.log(`[GOPAY PAY] Request received:`, {
     method: req.method,
     url: req.url,
     query: req.query,
@@ -693,11 +610,11 @@ app.all(["/propay_pay.php", "/propay_pay_bkash.php", "/api/propay_pay", "/api/pr
     const rawMethod = String(rawData.method || rawData.goods_name || (pathStr.includes("bkash") ? "bkash" : "nagad")).toLowerCase();
 
     if (!uid || isNaN(amount) || amount <= 0) {
-      console.error("[PROPAY PAY] Missing or invalid UID/Amount:", { uid, amount });
+      console.error("[GOPAY PAY] Missing or invalid UID/Amount:", { uid, amount });
       return res.status(400).send("<h3>Illegal access: UID or Amount missing</h3>");
     }
 
-    const host = req.headers["x-forwarded-host"] || req.get("host") || "ais-dev-sxllemqiu46rogxyb2cm6w-552213914579.asia-east1.run.app";
+    const host = req.get("host") || "ais-dev-sxllemqiu46rogxyb2cm6w-552213914579.asia-east1.run.app";
     const proto = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
     const origin = `${proto}://${host}`;
 
@@ -714,7 +631,7 @@ app.all(["/propay_pay.php", "/propay_pay_bkash.php", "/api/propay_pay", "/api/pr
     // Primary: 2202 for BKASH, 2201 for NAGAD
     const payType = isBkash ? "2202" : "2201";
 
-    const notifyURL = `${origin}/pay1/propay_notify.php`;
+    const notifyURL = `${origin}/pay1/gopay_notify.php`;
     let jumpURL = `${origin}/#/wallet/RechargeHistory`;
     if (rawData.return_url || rawData.page_url || rawData.redirect_url) {
       jumpURL = String(rawData.return_url || rawData.page_url || rawData.redirect_url);
@@ -755,12 +672,12 @@ app.all(["/propay_pay.php", "/propay_pay_bkash.php", "/api/propay_pay", "/api/pr
           amount,
           finalCredit,
           method: isBkash ? "bkash" : "nagad",
-          gateway: "propay",
+          gateway: "gopay",
           status: "pending",
           timestamp: isoTimestamp,
           createdAt: isoTimestamp,
           displayAmount: amount,
-          description: `ডিপোজিট রিকোয়েস্ট ${amount} টাকা (${payName} ProPay)`
+          description: `ডিপোজিট রিকোয়েস্ট ${amount} টাকা (${payName} GOPay)`
         };
 
         saveLocalTransaction(depRecord);
@@ -768,105 +685,6 @@ app.all(["/propay_pay.php", "/propay_pay_bkash.php", "/api/propay_pay", "/api/pr
           db.collection("deposits").doc(serial).set(depRecord, { merge: true }),
           db.collection("transactions").doc(serial).set(depRecord, { merge: true }),
           db.collection("users").doc(uid).collection("history").doc(serial).set(depRecord, { merge: true })
-        ]);
-        console.log(`[PROPAY PAY] Deposit pending record created in Firestore & Local with Order ID: ${serial}`);
-      }
-    } catch (dbErr) {
-      console.warn("[PROPAY PAY] DB record error:", dbErr);
-    }
-
-    const propayApiKey = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
-    const gatewayUrl = isBkash 
-      ? "https://checkout.propay.cyou/pay/Bkash.php" 
-      : "https://checkout.propay.cyou/pay/Nagad.php";
-
-    const propayParams = {
-      api_key: propayApiKey,
-      uid: uid,
-      amount: String(amount),
-      order_no: serial,
-      return_url: jumpURL,
-      pass_through_key: propayApiKey,
-      pass_through_callback_url: `${origin}/callback.php`
-    };
-
-    const queryString = new URLSearchParams(propayParams).toString();
-    const cashierUrl = `${gatewayUrl}?${queryString}`;
-
-    if (req.headers.accept?.includes("application/json") || req.xhr) {
-      return res.json({ success: true, redirect_url: cashierUrl, payInfo: cashierUrl });
-    }
-    return res.redirect(cashierUrl);
-  } catch (err: any) {
-    console.error("[PROPAY PAY Error]:", err);
-    return res.status(500).send(`<h3>Server Error: ${err.message}</h3>`);
-  }
-});
-
-
-// --- GOPay Integration ---
-
-// GOPay Payment Initiation Route
-app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay-pay"], async (req, res) => {
-  console.log(`[GOPAY PAY] Request received:`, {
-    method: req.method,
-    query: req.query,
-    body: req.body
-  });
-
-  try {
-    const uid = String(req.query.uid || req.body.uid || "");
-    const amountStr = String(req.query.amount || req.body.amount || "");
-    const methodStr = String(req.query.method || req.body.method || "bkash").toLowerCase();
-    let order_no = String(req.query.order_no || req.body.order_no || "");
-
-    const amount = Number(amountStr);
-    if (!uid || isNaN(amount) || amount <= 0) {
-      console.error("[GOPAY PAY] Missing or invalid UID/Amount:", { uid, amount });
-      return res.status(400).send("<h3>Missing or invalid UID or Amount.</h3>");
-    }
-
-    const isBkash = methodStr.includes("bkash");
-    const payName = isBkash ? "bKash" : "Nagad";
-    
-    // Generate Serial if not provided
-    const now = new Date();
-    const createdate = now.toISOString().replace(/T/, ' ').replace(/\..+/, '');
-    const serial = order_no || `ORD${now.getTime()}${Math.floor(Math.random() * 1000)}`;
-
-    const origin = req.get("origin") || req.protocol + "://" + req.get("host");
-    const jumpURL = `${origin}/?m=1&order_no=${serial}`;
-    const notifyURL = `${origin}/pay1/gopay_notify.php`;
-
-    let finalCredit = amount;
-
-    try {
-      const adminApp = getFirebaseAdmin();
-      if (adminApp) {
-        const db = adminApp.firestore();
-        const depositRef = db.collection("deposits").doc(serial);
-        const record = {
-          id: serial,
-          order_no: serial,
-          orderId: serial,
-          depositNo: serial,
-          serialNo: serial,
-          uid,
-          amount,
-          finalCredit,
-          method: isBkash ? "bkash" : "nagad",
-          gateway: "gopay",
-          status: "pending",
-          timestamp: new Date().toISOString(),
-          createdAt: new Date().toISOString(),
-          displayAmount: amount,
-          description: `ডিপোজিট রিকোয়েস্ট ${amount} টাকা (${payName} GOPay)`
-        };
-        saveLocalTransaction(record);
-        await Promise.all([
-          depositRef.set(record, { merge: true }),
-          db.collection("transactions").doc(serial).set(record, { merge: true }),
-          db.collection("users").doc(uid).collection("history").doc(serial).set(record, { merge: true })
         ]);
         console.log(`[GOPAY PAY] Deposit pending record created in Firestore & Local with Order ID: ${serial}`);
       }
@@ -990,152 +808,6 @@ app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay
 app.all(["/pay1/gopay_notify.php", "/gopay_notify.php", "/api/gopay-notify"], async (req, res) => {
   console.log(`[GOPAY NOTIFY] Received callback:`, {
     method: req.method,
-    query: req.query,
-    body: req.body
-  });
-
-  try {
-    const data = req.method === "POST" ? req.body : req.query;
-    if (!data || Object.keys(data).length === 0) {
-      console.error("[GOPAY NOTIFY] ERROR: Empty POST/GET data received.");
-      return res.status(400).send("FAIL");
-    }
-
-    const {
-      tradeResult,
-      mch_order_no,
-      trade_amount,
-      sign
-    } = data;
-
-    const secretKey = "87a89555480aae027ad84daf666602d7";
-
-    const sortedKeys = Object.keys(data).filter(k => k !== 'sign' && k !== 'sign_type').sort();
-    let signStr = "";
-    for (const k of sortedKeys) {
-      const v = data[k];
-      if (v !== "" && v !== null && v !== undefined) {
-        signStr += `${k}=${v}&`;
-      }
-    }
-    signStr += `key=${secretKey}`;
-    
-    const localSign = crypto.createHash("md5").update(signStr).digest("hex");
-    const gateSign = sign ? String(sign).toLowerCase() : "";
-
-    if (localSign !== gateSign) {
-      console.error(`[GOPAY NOTIFY] SECURITY REJECTION: SIGN MISMATCH | Local: ${localSign} | Gateway: ${gateSign}`);
-      return res.send("SUCCESS"); 
-    }
-
-    console.log("[GOPAY NOTIFY] SIGNATURE VERIFIED SUCCESSFULLY");
-
-    const amount = Number(trade_amount);
-    if (!mch_order_no || isNaN(amount)) {
-      console.error("[GOPAY NOTIFY] ERROR: Invalid order_no or trade_amount:", { mch_order_no, trade_amount });
-      return res.send("SUCCESS");
-    }
-
-    if (String(tradeResult) === "1") {
-      let depositRecord: any = null;
-      let uid = "";
-      
-      const adminApp = getFirebaseAdmin();
-      if (adminApp) {
-        const db = adminApp.firestore();
-        
-        try {
-          const docRef = db.collection("deposits").doc(mch_order_no);
-          const docSnap = await docRef.get();
-          if (docSnap.exists) {
-            depositRecord = docSnap.data();
-            uid = depositRecord.uid;
-          } else {
-             // maybe check originalSerial if needed
-          }
-        } catch (dbErr) {
-          console.warn("[GOPAY NOTIFY] Firestore read warning:", dbErr);
-        }
-
-        if (!depositRecord || !uid) {
-          console.error(`[GOPAY NOTIFY] SECURITY REJECTION: Order No ${mch_order_no} not found in Database.`);
-          return res.send("SUCCESS");
-        }
-
-        const currentStatus = depositRecord.status;
-        if (currentStatus === "approved" || currentStatus === "success" || currentStatus === "completed") {
-          console.log(`[GOPAY NOTIFY] IDEMPOTENCY LOCK: Order No ${mch_order_no} is already processed & credited.`);
-          return res.send("SUCCESS");
-        }
-
-        const creditAmount = depositRecord.finalCredit || depositRecord.amount || amount;
-        
-        try {
-          await db.runTransaction(async (t) => {
-            const txDocRef = db.collection("deposits").doc(mch_order_no);
-            const txSnap = await t.get(txDocRef);
-            if (!txSnap.exists) throw new Error("Deposit disappeared during tx");
-            
-            const txData = txSnap.data();
-            if (txData?.status === "approved" || txData?.status === "success") {
-                console.log(`[GOPAY NOTIFY] Transaction aborted: Order ${mch_order_no} already credited inside lock.`);
-                return;
-            }
-
-            const userRef = db.collection("users").doc(uid);
-            const userSnap = await t.get(userRef);
-            let currentBalance = 0;
-            let totalDeposited = 0;
-            if (userSnap.exists) {
-               const uD = userSnap.data();
-               currentBalance = Number(uD?.balance || 0);
-               totalDeposited = Number(uD?.totalDeposited || 0);
-            }
-            
-            t.update(userRef, {
-                balance: currentBalance + creditAmount,
-                totalDeposited: totalDeposited + creditAmount
-            });
-            
-            t.update(txDocRef, {
-                status: "approved",
-                approvedAt: new Date().toISOString()
-            });
-            t.update(db.collection("transactions").doc(mch_order_no), {
-                status: "approved",
-                approvedAt: new Date().toISOString()
-            });
-            t.update(db.collection("users").doc(uid).collection("history").doc(mch_order_no), {
-                status: "approved",
-                approvedAt: new Date().toISOString()
-            });
-          });
-        } catch (trxErr) {
-          console.warn("[GOPAY NOTIFY] Firestore transaction error:", trxErr);
-        }
-        
-        // Save locally just in case
-        depositRecord.status = "approved";
-        saveLocalTransaction(depositRecord);
-        
-        console.log(`[GOPAY NOTIFY] SUCCESS: Verified balance credited for UID: ${uid} | Amount: ${creditAmount} | Order: ${mch_order_no}`);
-      }
-    } else {
-      console.log(`[GOPAY NOTIFY] PAYMENT CANCELLED/FAILED: Gateway reported tradeResult=${tradeResult} for Order: ${mch_order_no}`);
-    }
-
-    return res.send("SUCCESS");
-
-  } catch (err) {
-    console.error("[GOPAY NOTIFY ERROR]:", err);
-    return res.send("SUCCESS");
-  }
-});
-
-// ProPay Callback / Notify Route
-app.all(["/pay1/propay_notify.php", "/propay_notify.php", "/api/propay-notify"], async (req, res) => {
-  console.log(`[PROPAY NOTIFY] Received callback:`, {
-    method: req.method,
     url: req.url,
     body: req.body,
     query: req.query
@@ -1144,7 +816,7 @@ app.all(["/pay1/propay_notify.php", "/propay_notify.php", "/api/propay-notify"],
   try {
     const rawData = req.body && Object.keys(req.body).length > 0 ? req.body : req.query;
     if (!rawData || Object.keys(rawData).length === 0) {
-      console.error("[PROPAY NOTIFY] ERROR: Empty POST/GET data received.");
+      console.error("[GOPAY NOTIFY] ERROR: Empty POST/GET data received.");
       return res.send("fail");
     }
 
@@ -1174,19 +846,19 @@ app.all(["/pay1/propay_notify.php", "/propay_notify.php", "/api/propay-notify"],
       if (localSignNoAmp === gateSign) {
         localSign = localSignNoAmp;
       } else {
-        console.error(`[PROPAY NOTIFY] SECURITY REJECTION: SIGN MISMATCH | Local: ${localSign} | Gateway: ${gateSign}`);
+        console.error(`[GOPAY NOTIFY] SECURITY REJECTION: SIGN MISMATCH | Local: ${localSign} | Gateway: ${gateSign}`);
         return res.send("fail");
       }
     }
 
-    console.log("[PROPAY NOTIFY] SIGNATURE VERIFIED SUCCESSFULLY");
+    console.log("[GOPAY NOTIFY] SIGNATURE VERIFIED SUCCESSFULLY");
 
     const mch_order_no = String(rawData.mchOrderNo || rawData.mch_order_no || "");
     const trade_amount = parseFloat(rawData.amount || rawData.tradeAmount || 0);
     const tradeResult = String(rawData.tradeResult || "");
 
     if (!mch_order_no || isNaN(trade_amount) || trade_amount <= 0) {
-      console.error("[PROPAY NOTIFY] ERROR: Invalid order_no or trade_amount:", { mch_order_no, trade_amount });
+      console.error("[GOPAY NOTIFY] ERROR: Invalid order_no or trade_amount:", { mch_order_no, trade_amount });
       return res.send("fail");
     }
 
@@ -1215,12 +887,12 @@ app.all(["/pay1/propay_notify.php", "/propay_notify.php", "/api/propay-notify"],
           orderData = { ...depositDoc.data(), ...orderData };
         }
       } catch (dbErr) {
-        console.warn("[PROPAY NOTIFY] Firestore read warning:", dbErr);
+        console.warn("[GOPAY NOTIFY] Firestore read warning:", dbErr);
       }
     }
 
     if (!orderData) {
-      console.error(`[PROPAY NOTIFY] SECURITY REJECTION: Order No ${mch_order_no} not found in Database.`);
+      console.error(`[GOPAY NOTIFY] SECURITY REJECTION: Order No ${mch_order_no} not found in Database.`);
       return res.send("fail");
     }
 
@@ -1230,7 +902,7 @@ app.all(["/pay1/propay_notify.php", "/propay_notify.php", "/api/propay-notify"],
 
     // Strict 1-Time Rule: If already credited, do NOT credit again
     if (isAlreadyCredited) {
-      console.log(`[PROPAY NOTIFY] IDEMPOTENCY LOCK: Order No ${mch_order_no} is already processed & credited. Rejecting duplicate credit.`);
+      console.log(`[GOPAY NOTIFY] IDEMPOTENCY LOCK: Order No ${mch_order_no} is already processed & credited. Rejecting duplicate credit.`);
       return res.send("success");
     }
 
@@ -1250,7 +922,7 @@ app.all(["/pay1/propay_notify.php", "/propay_notify.php", "/api/propay-notify"],
             if (latestDepSnap && latestDepSnap.exists) {
               const latestData = latestDepSnap.data();
               if (latestData?.status === "approved" || latestData?.status === "1" || latestData?.credited === true) {
-                console.log(`[PROPAY NOTIFY] Transaction aborted: Order ${mch_order_no} already credited inside lock.`);
+                console.log(`[GOPAY NOTIFY] Transaction aborted: Order ${mch_order_no} already credited inside lock.`);
                 return;
               }
             }
@@ -1291,7 +963,7 @@ app.all(["/pay1/propay_notify.php", "/propay_notify.php", "/api/propay-notify"],
             transaction.set(userHistoryRef, { status: "approved", credited: true, updatedAt: new Date().toISOString() }, { merge: true });
           });
         } catch (trxErr) {
-          console.warn("[PROPAY NOTIFY] Firestore transaction error:", trxErr);
+          console.warn("[GOPAY NOTIFY] Firestore transaction error:", trxErr);
         }
       }
 
@@ -1307,11 +979,11 @@ app.all(["/pay1/propay_notify.php", "/propay_notify.php", "/api/propay-notify"],
         updatedAt: new Date().toISOString()
       });
 
-      console.log(`[PROPAY NOTIFY] SUCCESS: Verified balance credited for UID: ${uid} | Amount: ${creditAmount} | Order: ${mch_order_no}`);
+      console.log(`[GOPAY NOTIFY] SUCCESS: Verified balance credited for UID: ${uid} | Amount: ${creditAmount} | Order: ${mch_order_no}`);
       return res.send("success");
     } else {
       // Failed trade / Fake transaction / Cancelled payment
-      console.log(`[PROPAY NOTIFY] PAYMENT CANCELLED/FAILED: Gateway reported tradeResult=${tradeResult} for Order: ${mch_order_no}`);
+      console.log(`[GOPAY NOTIFY] PAYMENT CANCELLED/FAILED: Gateway reported tradeResult=${tradeResult} for Order: ${mch_order_no}`);
       if (adminApp) {
         try {
           const db = adminApp.firestore();
@@ -1333,14 +1005,14 @@ app.all(["/pay1/propay_notify.php", "/propay_notify.php", "/api/propay-notify"],
       return res.send("success");
     }
   } catch (err: any) {
-    console.error("[PROPAY NOTIFY ERROR]:", err);
+    console.error("[GOPAY NOTIFY ERROR]:", err);
     return res.send("fail");
   }
 });
 
-// ProPay Callback
-app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, res) => {
-  console.log(`[ProPay Callback] RAW REQUEST RECEIVED:`, {
+// GOPay Callback
+app.all(["/api/callback", "/api/gopay-callback", "/callback.php"], async (req, res) => {
+  console.log(`[GOPay Callback] RAW REQUEST RECEIVED:`, {
       method: req.method,
       url: req.url,
       headers: req.headers,
@@ -1355,9 +1027,9 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
     const body = req.body && Object.keys(req.body).length > 0 ? req.body : req.query;
     const { signature, order_no, amount } = body;
     
-    console.log(`[ProPay Callback] Extracted Data:`, { order_no, amount, signature });
+    console.log(`[GOPay Callback] Extracted Data:`, { order_no, amount, signature });
 
-    const api_key = process.env.PROPAY_API_KEY || 'cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc';
+    const api_key = process.env.GOPAY_API_KEY || 'cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc';
     
     // Convert amount to match PHP's (float) behavior
     const formatted_amount = parseFloat(amount);
@@ -1370,7 +1042,7 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
     const expected_signature = hmac.digest('hex').toLowerCase();
     const received_signature = (signature || '').toString().trim().toLowerCase();
 
-    console.log(`[ProPay Callback] VERIFICATION ATTEMPT:`, { 
+    console.log(`[GOPay Callback] VERIFICATION ATTEMPT:`, { 
         order_no, 
         received_signature,
         expected_signature,
@@ -1383,7 +1055,7 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
       crypto.timingSafeEqual(Buffer.from(expected_signature, "utf8"), Buffer.from(received_signature, "utf8"))
     );
     if (isSigValid) {
-        console.log(`[ProPay Callback] Signature VALID for order: ${order_no}`);
+        console.log(`[GOPay Callback] Signature VALID for order: ${order_no}`);
         const depositRef = db.collection('deposits').doc(order_no);
         const transactionRef = db.collection('transactions').doc(order_no);
         
@@ -1442,10 +1114,10 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
                             status: 'approved'
                         }, { merge: true });
                     });
-                    console.log(`[ProPay Callback] Order ${order_no} processed. User ${uid} credited ${amountToCredit}`);
+                    console.log(`[GOPay Callback] Order ${order_no} processed. User ${uid} credited ${amountToCredit}`);
                     res.send('Success');
                 } catch (error: any) {
-                    console.error(`[ProPay Callback] Transaction error for ${order_no}:`, error);
+                    console.error(`[GOPay Callback] Transaction error for ${order_no}:`, error);
                     res.status(500).send('Transaction failed: ' + error.message);
                 }
             } else {
@@ -1455,7 +1127,7 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
             res.status(404).send('Order not found');
         }
     } else {
-        console.error(`[ProPay Callback] Signature INVALID for order: ${order_no}`);
+        console.error(`[GOPay Callback] Signature INVALID for order: ${order_no}`);
         await db.collection('webhook_logs').add({
             error: 'Signature Mismatch',
             order: order_no
@@ -1463,7 +1135,7 @@ app.all(["/api/callback", "/api/propay-callback", "/callback.php"], async (req, 
         res.status(403).send("Invalid Signature");
     }
   } catch (e: any) {
-      console.error("[ProPay Callback] Error:", e);
+      console.error("[GOPay Callback] Error:", e);
       res.status(500).send("Error");
   }
 });

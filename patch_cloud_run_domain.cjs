@@ -1,7 +1,7 @@
 const fs = require("fs");
 const esbuild = require("esbuild");
 
-const BACKEND_URL = "";
+const BACKEND_URL = "https://sn777-site-864935185164.us-west1.run.app";
 
 const jsFiles = [
   "dist/assets/index-sn777-v5.js",
@@ -25,7 +25,7 @@ jsFiles.forEach(filePath => {
     var origFetch = window.fetch;
     window.fetch = function(input, init) {
       if (typeof input === "string") {
-        if (input.startsWith("/api/") || input.startsWith("/propay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
+        if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
           if (window.BACKEND_API_BASE) {
             input = window.BACKEND_API_BASE + input;
           }
@@ -41,26 +41,26 @@ jsFiles.forEach(filePath => {
 
   // 1. Direct hardcoded fallback if BACKEND_API_BASE is undefined in any context
   code = code.replace(
-    /\$\{window\.BACKEND_API_BASE\|\|""\}\/propay_pay\.php/g,
-    '${(typeof window!=="undefined"&&window.BACKEND_API_BASE)?window.BACKEND_API_BASE:"' + BACKEND_URL + '"}/propay_pay.php'
+    /\$\{window\.BACKEND_API_BASE\|\|""\}\/gopay_pay\.php/g,
+    '${(typeof window!=="undefined"&&window.BACKEND_API_BASE)?window.BACKEND_API_BASE:"' + BACKEND_URL + '"}/gopay_pay.php'
   );
   code = code.replace(
-    /\/propay_pay\.php\?uid=/g,
-    BACKEND_URL + '/propay_pay.php?uid='
+    /\/gopay_pay\.php\?uid=/g,
+    BACKEND_URL + '/gopay_pay.php?uid='
   );
 
-  // 2. Also ensure any /propay_pay.php strings directly use the full Cloud Run backend URL
+  // 2. Also ensure any /gopay_pay.php strings directly use the full Cloud Run backend URL
   code = code.replace(
-    /`\/propay_pay\.php/g,
-    '`' + BACKEND_URL + '/propay_pay.php'
+    /`\/gopay_pay\.php/g,
+    '`' + BACKEND_URL + '/gopay_pay.php'
   );
   code = code.replace(
-    /"\/propay_pay\.php"/g,
-    '"' + BACKEND_URL + '/propay_pay.php"'
+    /"\/gopay_pay\.php"/g,
+    '"' + BACKEND_URL + '/gopay_pay.php"'
   );
   code = code.replace(
-    /'\/propay_pay\.php'/g,
-    "'" + BACKEND_URL + "/propay_pay.php'"
+    /'\/gopay_pay\.php'/g,
+    "'" + BACKEND_URL + "/gopay_pay.php'"
   );
 
   try {

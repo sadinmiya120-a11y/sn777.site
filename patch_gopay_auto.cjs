@@ -8,15 +8,15 @@ function patchFile(filePath) {
   let content = fs.readFileSync(filePath, 'utf8');
   let modified = false;
 
-  // 1. Patch ProPay checkout URL parameters and localStorage tracking
-  const target1 = `const Ue=\`\${qe}/api/propay-callback\`,Ke=\`\${qe}?m=1&order_no=\${Te}\`,jt=Be==="bkash"?"https://checkout.propay.cyou/pay/Bkash.php":"https://checkout.propay.cyou/pay/Nagad.php",wt=new URLSearchParams({api_key:Ne,uid:gt.currentUser.uid,amount:Number(E).toFixed(2),order_no:Te,return_url:Ke,pass_through_key:Ne,pass_through_callback_url:Ue});Le=\`\${jt}?\${wt.toString()}\``;
+  // 1. Patch GOPay checkout URL parameters and localStorage tracking
+  const target1 = `const Ue=\`\${qe}/api/gopay-callback\`,Ke=\`\${qe}?m=1&order_no=\${Te}\`,jt=Be==="bkash"?"https://checkout.gopay.cyou/pay/Bkash.php":"https://checkout.gopay.cyou/pay/Nagad.php",wt=new URLSearchParams({api_key:Ne,uid:gt.currentUser.uid,amount:Number(E).toFixed(2),order_no:Te,return_url:Ke,pass_through_key:Ne,pass_through_callback_url:Ue});Le=\`\${jt}?\${wt.toString()}\``;
 
-  const replace1 = `const Ue=\`\${qe}/api/propay-callback\`,Ke=\`\${qe}/success?m=1&order_no=\${Te}\`,jt=Be==="bkash"?"https://checkout.propay.cyou/pay/Bkash.php":"https://checkout.propay.cyou/pay/Nagad.php",wt=new URLSearchParams({api_key:Ne,uid:gt.currentUser.uid,amount:Number(E).toFixed(2),order_no:Te,return_url:Ke,success_url:Ke,cancel_url:\`\${qe}/fail?order_no=\${Te}\`,callback_url:Ue,webhook_url:Ue,notify_url:Ue,ipn_url:Ue,pass_through_key:Ne,pass_through_callback_url:Ue});try{localStorage.setItem("sn777_pending_order",JSON.stringify({order_no:Te,amount:Number(E),time:Date.now()}))}catch(e){}Le=\`\${jt}?\${wt.toString()}\``;
+  const replace1 = `const Ue=\`\${qe}/api/gopay-callback\`,Ke=\`\${qe}/success?m=1&order_no=\${Te}\`,jt=Be==="bkash"?"https://checkout.gopay.cyou/pay/Bkash.php":"https://checkout.gopay.cyou/pay/Nagad.php",wt=new URLSearchParams({api_key:Ne,uid:gt.currentUser.uid,amount:Number(E).toFixed(2),order_no:Te,return_url:Ke,success_url:Ke,cancel_url:\`\${qe}/fail?order_no=\${Te}\`,callback_url:Ue,webhook_url:Ue,notify_url:Ue,ipn_url:Ue,pass_through_key:Ne,pass_through_callback_url:Ue});try{localStorage.setItem("sn777_pending_order",JSON.stringify({order_no:Te,amount:Number(E),time:Date.now()}))}catch(e){}Le=\`\${jt}?\${wt.toString()}\``;
 
   if (content.includes(target1)) {
     content = content.replace(target1, replace1);
     modified = true;
-    console.log(`[${filePath}] Patched ProPay checkout params and storage tracking`);
+    console.log(`[${filePath}] Patched GOPay checkout params and storage tracking`);
   }
 
   // 2. Patch URL and Pending Order useEffect
