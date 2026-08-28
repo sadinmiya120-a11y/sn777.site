@@ -851,51 +851,7 @@ app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay
       }
       return res.redirect(cashierUrl);
     } else {
-      if (req.headers.accept?.includes("application/json") || req.xhr) {
-        return res.status(400).json({ success: false, error: lastErrorMsg, method: isBkash ? "bkash" : "nagad" });
-      }
-      const isNagad = !isBkash;
-      const errorTitle = isNagad ? "নগদ গেটওয়ে সাময়িক অনুপলব্ধ" : "পেমেন্ট গেটওয়ে সাময়িক অনুপলব্ধ";
-      const errorDesc = isNagad
-        ? "নগদ পেমেন্ট গেটওয়ে প্রোভাইডারের সার্ভার বর্তমানে আপডেট/মেইনটেন্যান্সের অধীনে রয়েছে। অনুগ্রহ করে বিকাশ (bKash) দিয়ে ডিপোজিট করুন অথবা কিছুক্ষণ পর চেষ্টা করুন।"
-        : `পেমেন্ট গেটওয়ে সার্ভার সাড়া দেয়নি (${lastErrorMsg})। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।`;
-
-      return res.status(400).send(`
-<!DOCTYPE html>
-<html lang="bn">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Payment Gateway Notice - SN777</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;600;700&display=swap" rel="stylesheet">
-  <style>body { font-family: 'Hind Siliguri', sans-serif; }</style>
-</head>
-<body class="bg-slate-950 text-white min-h-screen flex items-center justify-center p-4">
-  <div class="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center shadow-2xl relative overflow-hidden">
-    <div class="absolute -top-10 -right-10 w-32 h-32 bg-amber-500/10 rounded-full blur-2xl"></div>
-    <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center">
-      <svg class="w-8 h-8 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
-      </svg>
-    </div>
-    <h2 class="text-xl font-bold text-amber-400 mb-2">${errorTitle}</h2>
-    <p class="text-slate-300 text-sm mb-4 leading-relaxed">${errorDesc}</p>
-    <div class="bg-slate-950/80 border border-slate-800/80 rounded-xl p-3 mb-5 text-left">
-      <p class="text-xs text-slate-400 font-mono"><span class="text-slate-500">Provider Status:</span> ${lastErrorMsg}</p>
-    </div>
-    <div class="flex flex-col gap-2.5">
-      <a href="/#/wallet/RechargeHistory" class="w-full py-3 px-4 bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-bold rounded-xl text-sm transition shadow-lg flex items-center justify-center gap-2">
-        <span>ডিপোজিট পেইজে ফিরে যান</span>
-      </a>
-      <a href="https://t.me/sn777top" target="_blank" class="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl transition border border-slate-700 flex items-center justify-center gap-2">
-        <span>২৪/৭ টেলিগ্রাম সাপোর্ট</span>
-      </a>
-    </div>
-  </div>
-</body>
-</html>
-      `);
+      return res.status(400).send(`<h3>gopay API ERROR: ${lastErrorMsg}</h3>`);
     }
   } catch (err: any) {
     console.error("[GOPAY PAY Error]:", err);
