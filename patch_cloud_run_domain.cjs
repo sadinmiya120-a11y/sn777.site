@@ -1,7 +1,7 @@
 const fs = require("fs");
 const esbuild = require("esbuild");
 
-const BACKEND_URL = "https://sn777.site";
+const BACKEND_URL = "https://sn777-site-864935185164.us-west1.run.app";
 
 const jsFiles = [
   "dist/assets/index-sn777-v5.js",
