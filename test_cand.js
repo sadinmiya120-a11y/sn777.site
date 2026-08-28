@@ -51037,6 +51037,8 @@ const Hz = ({ onBack: n }) => {
                         const je = N.find((Ge) => {
                             var _e, Y;
                             return (
+                              (Ge.id && V.uid && Ge.id === V.uid) ||
+                              (Ge.uid && V.uid && Ge.uid === V.uid) ||
                               ((_e = Ge.username) == null
                                 ? void 0
                                 : _e.toLowerCase()) ===
@@ -51087,7 +51089,7 @@ const Hz = ({ onBack: n }) => {
                                             o.jsx("h4", {
                                               className:
                                                 "text-sm font-black text-slate-800 uppercase",
-                                              children: V.username || "User",
+                                              children: (V.username && V.username !== "unknown") ? V.username : (je ? (je.username || je.name || je.id) : (V.uid && V.uid !== "unknown" ? V.uid : "User")),
                                             }),
                                             o.jsxs("div", {
                                               className:
@@ -51245,6 +51247,8 @@ const Hz = ({ onBack: n }) => {
                         const je = N.find((_e) => {
                             var Y, G;
                             return (
+                              (_e.id && V.uid && _e.id === V.uid) ||
+                              (_e.uid && V.uid && _e.uid === V.uid) ||
                               ((Y = _e.username) == null
                                 ? void 0
                                 : Y.toLowerCase()) ===
@@ -51295,7 +51299,7 @@ const Hz = ({ onBack: n }) => {
                                             o.jsx("h4", {
                                               className:
                                                 "text-sm font-black text-slate-800 uppercase",
-                                              children: V.username,
+                                              children: (V.username && V.username !== "unknown") ? V.username : (je ? (je.username || je.name || je.id) : (V.uid && V.uid !== "unknown" ? V.uid : "User")),
                                             }),
                                             o.jsx("p", {
                                               className:
@@ -60568,8 +60572,8 @@ function $z() {
           (await Promise.all([
             Ks(We(Ie, "deposits", Te), {
               uid: gt.currentUser.uid,
-              username: Ke.username || "unknown",
-              phone: Ke.phone || "unknown",
+              username: (Ke && Ke.username && Ke.username !== "unknown") ? Ke.username : ((ve && ve.username && ve.username !== "unknown" && ve.username !== "ব্যবহারকারী") ? ve.username : (localStorage.getItem("sn777_username") || gt.currentUser.uid || "User")),
+              phone: (Ke && Ke.phone) ? Ke.phone : ((ve && ve.phone) ? ve.phone : "01700000000"),
               amount: E,
               finalCredit: Vn,
               method: Be,
@@ -60644,6 +60648,28 @@ function $z() {
         if (!gt.currentUser) return;
         const E = oi ? oi.trim() : "";
         if (E && !["binance", "usdt", "usdterc20"].includes(Be)) {
+          if (E.length < 8 || !/^[a-zA-Z0-9_-]+$/.test(E) || /^(.)\1+$/.test(E)) {
+            (Fe("ভুল বা ফেক ট্রানজ্যাকশন আইডি! দয়া করে সঠিক ট্রানজ্যাকশন আইডি প্রদান করুন।"),
+              Je(!0),
+              xe(!1));
+            return;
+          }
+          try {
+            const valRes = await fetch("/api/validate-manual-deposit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ uid: gt.currentUser.uid, transactionId: E, order_no: Oi, amount: ys })
+            });
+            const valData = await valRes.json();
+            if (!valRes.ok || !valData.success) {
+              (Fe(valData.error || "এই ট্রানজ্যাকশন আইডি ব্যবহার করা যাবে না।"),
+                Je(!0),
+                xe(!1));
+              return;
+            }
+          } catch (valErr) {
+            console.warn("Validation request warning:", valErr);
+          }
           const wt = hn(Ie, "deposits"),
             ft = In(wt, Qt("transactionId", "==", E)),
             Fn = await Gn(ft);
@@ -60654,14 +60680,15 @@ function $z() {
                 const bs = Rs.data();
                 (bs.status === "approved" ||
                   bs.status === "pending" ||
-                  bs.status === "success") &&
+                  bs.status === "success" ||
+                  bs.credited === true) &&
                   (Vn = !0);
               }
             }),
             Vn)
           ) {
             (Fe(
-              "এই ট্রানজ্যাকশন আইডি আগে ব্যবহৃত হয়েছে। অনুগ্রহ করে সঠিক ট্রানজ্যাকশন আইডি দিন।",
+              "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহৃত হয়েছে। একই আইডি দিয়ে পুনরায় টাকা যোগ করা সম্ভব নয়।",
             ),
               Je(!0),
               xe(!1));

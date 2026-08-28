@@ -219,6 +219,44 @@ function saveLocalTransaction(tx: any) {
   }
 }
 
+async function fixUnknownUsernamesInDb() {
+  try {
+    const localList = getLocalTransactions();
+    let updatedLocal = false;
+    for (const tx of localList) {
+      if (!tx.username || tx.username === "unknown") {
+        const fallbackName = tx.uid && tx.uid !== "unknown" ? tx.uid : "User";
+        tx.username = fallbackName;
+        updatedLocal = true;
+      }
+    }
+    if (updatedLocal) {
+      fs.writeFileSync(TX_STORE_FILE, JSON.stringify(localList, null, 2), "utf8");
+    }
+
+    const adminApp = getFirebaseAdmin();
+    if (!adminApp) return;
+    const db = adminApp.firestore();
+
+    const depSnap = await db.collection("deposits").where("username", "==", "unknown").limit(10).get();
+    for (const dDoc of depSnap.docs) {
+      const dData = dDoc.data();
+      const uName = dData.uid && dData.uid !== "unknown" ? dData.uid : "User";
+      await dDoc.ref.update({ username: uName }).catch(() => {});
+    }
+  } catch (err: any) {
+    if (err?.code === 8 || err?.message?.includes("Quota exceeded")) {
+      // Gracefully handle Firestore quota limit without spamming error logs
+      return;
+    }
+    console.warn("fixUnknownUsernamesInDb status:", err?.message || err);
+  }
+}
+
+setTimeout(() => {
+  fixUnknownUsernamesInDb();
+}, 3000);
+
 
 // Endpoint to record transaction persistently
 app.post("/api/record-transaction", async (req, res) => {
@@ -648,16 +686,33 @@ app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay
       if (adminApp) {
         const db = adminApp.firestore();
         let phone = "01700000000";
-        let username = "unknown";
+        let username = uid || "User";
 
         try {
+          let uData: any = null;
           const userDoc = await db.collection("users").doc(uid).get();
           if (userDoc.exists) {
-            const uData = userDoc.data();
-            phone = uData?.phone || phone;
-            username = uData?.username || username;
+            uData = userDoc.data();
+          } else {
+            const q1 = await db.collection("users").where("uid", "==", uid).limit(1).get();
+            if (!q1.empty) {
+              uData = q1.docs[0].data();
+            } else {
+              const q2 = await db.collection("users").where("username", "==", uid).limit(1).get();
+              if (!q2.empty) {
+                uData = q2.docs[0].data();
+              }
+            }
+          }
+          if (uData) {
+            phone = uData.phone || uData.mobile || phone;
+            username = uData.username || uData.name || uData.userName || uData.displayName || username;
           }
         } catch (e) {}
+
+        if (!username || username === "unknown") {
+          username = uid || "User";
+        }
 
         const isoTimestamp = new Date().toISOString();
         const depRecord = {
@@ -1364,28 +1419,42 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
       return res.status(400).json({ success: false, error: "ট্রানজ্যাকশন আইডি প্রদান করুন।" });
     }
 
+    // 1. Fake / Bad Format Check (Minimum 8 chars, alphanumeric, no repetitive chars)
+    if (cleanTxId.length < 8 || !/^[a-zA-Z0-9_-]+$/.test(cleanTxId) || /^(.)\1+$/.test(cleanTxId)) {
+      return res.status(400).json({
+        success: false,
+        error: "ভুল বা ফেক ট্রানজ্যাকশন আইডি! ফরম্যাট সঠিক নয় (কমপক্ষে ৮ অক্ষরের সঠিক ট্রানজ্যাকশন আইডি দিন)।"
+      });
+    }
+
     let db = null;
     try {
       const adminApp = getFirebaseAdmin();
       if (adminApp) db = adminApp.firestore();
     } catch (e) {}
 
-    // Check duplicate usage across database
+    // 2. Strict 1-Time Usage / Duplicate Check across Database
     if (db) {
       try {
-        // 1. Check if this TrxID is already approved or credited anywhere
         const querySnap = await db.collection("deposits")
           .where("transactionId", "==", cleanTxId)
           .limit(10)
           .get();
 
         for (const doc of querySnap.docs) {
-          const d = doc.data();
-          if (d.status === "approved" || d.status === "success" || d.credited === true) {
-            return res.status(400).json({
-              success: false,
-              error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে!"
-            });
+          if (doc.id !== order_no) {
+            const d = doc.data();
+            if (d.status === "approved" || d.status === "success" || d.credited === true) {
+              return res.status(400).json({
+                success: false,
+                error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে! একই আইডি বারবার ব্যবহার করা সম্ভব নয়।"
+              });
+            } else if (d.status === "pending") {
+              return res.status(400).json({
+                success: false,
+                error: "এই ট্রানজ্যাকশন আইডি দিয়ে ইতিমধ্যে একটি ডিপোজিট রিকোয়েস্ট অপেক্ষমান রয়েছে।"
+              });
+            }
           }
         }
 
@@ -1395,12 +1464,14 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
           .get();
 
         for (const doc of queryOrderSnap.docs) {
-          const d = doc.data();
-          if (d.status === "approved" || d.status === "success" || d.credited === true) {
-            return res.status(400).json({
-              success: false,
-              error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে!"
-            });
+          if (doc.id !== order_no) {
+            const d = doc.data();
+            if (d.status === "approved" || d.status === "success" || d.credited === true) {
+              return res.status(400).json({
+                success: false,
+                error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে!"
+              });
+            }
           }
         }
       } catch (dbErr) {
@@ -1410,28 +1481,189 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
 
     // Check local transaction store for duplicates
     const localList = getLocalTransactions();
-    const isDup = localList.some((x: any) => 
+    const isDupApproved = localList.some((x: any) => 
+      x.id !== order_no && x.order_no !== order_no &&
       (x.transactionId === cleanTxId || x.order_no === cleanTxId || x.id === cleanTxId) &&
       (x.status === "approved" || x.credited === true)
     );
 
-    if (isDup) {
+    if (isDupApproved) {
       return res.status(400).json({
         success: false,
-        error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে!"
+        error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে!"
       });
     }
 
-    // Fake TrxID detection: must have minimum valid length & alphanumeric structure
-    if (cleanTxId.length < 8 || !/^[a-zA-Z0-9_-]+$/.test(cleanTxId)) {
-      return res.status(400).json({
-        success: false,
-        error: "ভুল বা অবৈধ ট্রানজ্যাকশন আইডি! ডিপোজিট বাতিল করা হলো।"
-      });
-    }
-
-    return res.json({ success: true, message: "ট্রানজ্যাকশন আইডি গ্রহণ করা হয়েছে, যাচাইকরণ প্রক্রিয়াধীন।" });
+    return res.json({ success: true, message: "ট্রানজ্যাকশন আইডি বৈধ এবং গ্রহণ করা হয়েছে।" });
   } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin Approve Deposit Endpoint (Strict 1-Time Credit Lock)
+app.post("/api/admin/approve-deposit", async (req, res) => {
+  try {
+    const { order_no, amount } = req.body;
+    if (!order_no) {
+      return res.status(400).json({ success: false, error: "Missing order_no" });
+    }
+    const cleanOrderNo = String(order_no).trim();
+    const adminApp = getFirebaseAdmin();
+    if (!adminApp) {
+      return res.status(500).json({ success: false, error: "Database connection failed" });
+    }
+    const db = adminApp.firestore();
+    const depositRef = db.collection("deposits").doc(cleanOrderNo);
+
+    // Run Firestore atomic transaction with strict idempotency lock
+    const result = await db.runTransaction(async (transaction) => {
+      const depSnap = await transaction.get(depositRef);
+      let depData: any = null;
+      if (depSnap.exists) {
+        depData = depSnap.data();
+      } else {
+        const qSnap = await db.collection("deposits").where("order_no", "==", cleanOrderNo).limit(1).get();
+        if (!qSnap.empty) {
+          depData = qSnap.docs[0].data();
+        }
+      }
+
+      if (!depData) {
+        throw new Error("ডিপোজিট রেকর্ড খুঁজে পাওয়া যায়নি!");
+      }
+
+      // STRICT IDEMPOTENCY LOCK: Prevent double credit
+      if (depData.status === "approved" || depData.status === "success" || depData.credited === true) {
+        throw new Error("ALREADY_CREDITED");
+      }
+
+      const uid = depData.uid;
+      if (!uid) {
+        throw new Error("ইউজার আইডি পাওয়া যায়নি!");
+      }
+
+      const requestedAmount = Number(amount) || Number(depData.amount) || 0;
+      const finalCredit = Number(depData.finalCredit || depData.creditedAmount || requestedAmount);
+
+      const userRef = db.collection("users").doc(uid);
+      const userSnap = await transaction.get(userRef);
+      const userData = userSnap.exists ? userSnap.data() : {};
+      const currentBalance = Number(userData?.balance || 0);
+      const currentApprovedCount = Number(userData?.approvedDepositsCount || 0);
+      const currentTotalDeposited = Number(userData?.totalDeposited || 0);
+
+      const newBalance = (currentBalance + finalCredit).toFixed(2);
+      const newTotalDeposited = currentTotalDeposited + requestedAmount;
+      const newApprovedCount = currentApprovedCount + 1;
+
+      // 1. Update user balance & deposit metrics
+      transaction.set(userRef, {
+        balance: newBalance,
+        approvedDepositsCount: newApprovedCount,
+        totalDeposited: newTotalDeposited,
+        withdrawEnabled: (newTotalDeposited >= 940 && newApprovedCount >= 2),
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+
+      // 2. Mark deposit as approved & credited
+      const approvedPayload = {
+        status: "approved",
+        credited: true,
+        amount: requestedAmount,
+        finalCredit: finalCredit,
+        creditedAmount: finalCredit,
+        approvedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      transaction.set(depositRef, approvedPayload, { merge: true });
+
+      // 3. Update transactions & user history collections
+      const txRef = db.collection("transactions").doc(cleanOrderNo);
+      transaction.set(txRef, approvedPayload, { merge: true });
+
+      const userHistRef = db.collection("users").doc(uid).collection("history").doc(cleanOrderNo);
+      transaction.set(userHistRef, approvedPayload, { merge: true });
+
+      return { uid, newBalance, finalCredit, requestedAmount };
+    });
+
+    // Update local transaction store fallback
+    saveLocalTransaction({
+      id: cleanOrderNo,
+      order_no: cleanOrderNo,
+      status: "approved",
+      credited: true,
+      amount: result.requestedAmount,
+      finalCredit: result.finalCredit,
+      type: "deposit",
+      updatedAt: new Date().toISOString()
+    });
+
+    return res.json({
+      success: true,
+      message: `ডিপোজিট অ্যাপ্রুভ হয়েছে এবং ইউজারের ব্যালেন্সে ৳${result.finalCredit} যোগ করা হয়েছে।`,
+      amount: result.requestedAmount,
+      finalCredit: result.finalCredit
+    });
+  } catch (err: any) {
+    console.error("[APPROVE DEPOSIT ERROR]:", err);
+    if (err.message === "ALREADY_CREDITED" || err.message?.includes("ALREADY_CREDITED")) {
+      return res.status(400).json({ success: false, error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যোগ হয়েছে! পুনরায় টাকা এড হবে না।" });
+    }
+    return res.status(500).json({ success: false, error: err.message || "ডিপোজিট অ্যাপ্রুভ করতে ব্যর্থ হয়েছে।" });
+  }
+});
+
+// Admin Reject Deposit Endpoint
+app.post("/api/admin/reject-deposit", async (req, res) => {
+  try {
+    const { order_no, reason } = req.body;
+    if (!order_no) {
+      return res.status(400).json({ success: false, error: "Missing order_no" });
+    }
+    const cleanOrderNo = String(order_no).trim();
+    const adminApp = getFirebaseAdmin();
+    if (!adminApp) {
+      return res.status(500).json({ success: false, error: "Database connection failed" });
+    }
+    const db = adminApp.firestore();
+    const depositRef = db.collection("deposits").doc(cleanOrderNo);
+    const depSnap = await depositRef.get();
+
+    let uid = "";
+    if (depSnap.exists) {
+      const depData = depSnap.data();
+      uid = depData?.uid;
+      if (depData?.status === "approved" || depData?.credited === true) {
+        return res.status(400).json({ success: false, error: "ইতিমধ্যে অ্যাপ্রুভড হওয়া ডিপোজিট বাতিল করা সম্ভব নয়!" });
+      }
+    }
+
+    const rejectPayload = {
+      status: "rejected",
+      cancelled: true,
+      rejectReason: reason || "ভুল বা ফেক ট্রানজ্যাকশন আইডি",
+      updatedAt: new Date().toISOString()
+    };
+
+    await depositRef.set(rejectPayload, { merge: true });
+    await db.collection("transactions").doc(cleanOrderNo).set(rejectPayload, { merge: true });
+
+    if (uid) {
+      await db.collection("users").doc(uid).collection("history").doc(cleanOrderNo).set(rejectPayload, { merge: true });
+    }
+
+    saveLocalTransaction({
+      id: cleanOrderNo,
+      order_no: cleanOrderNo,
+      status: "rejected",
+      cancelled: true,
+      updatedAt: new Date().toISOString()
+    });
+
+    return res.json({ success: true, message: "ডিপোজিট রিজেক্ট/বাতিল করা হয়েছে।" });
+  } catch (err: any) {
+    console.error("[REJECT DEPOSIT ERROR]:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
