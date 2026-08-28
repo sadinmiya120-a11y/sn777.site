@@ -608,7 +608,7 @@ app.post(["/api/gopay-init", "/api/gopay/init"], async (req, res) => {
       return res.status(400).json({ success: false, error: "UID or Amount missing" });
     }
 
-    const host = req.get("host") || "ais-dev-sxllemqiu46rogxyb2cm6w-552213914579.asia-east1.run.app";
+    const host = req.headers["x-forwarded-host"] || req.get("host") || "ais-dev-sxllemqiu46rogxyb2cm6w-552213914579.asia-east1.run.app";
     const proto = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
     const origin = `${proto}://${host}`;
     const serial = String(rawData.order_no || rawData.mch_order_no || (
@@ -697,7 +697,7 @@ app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay
       return res.status(400).send("<h3>Illegal access: UID or Amount missing</h3>");
     }
 
-    const host = req.get("host") || "ais-dev-sxllemqiu46rogxyb2cm6w-552213914579.asia-east1.run.app";
+    const host = req.headers["x-forwarded-host"] || req.get("host") || "ais-dev-sxllemqiu46rogxyb2cm6w-552213914579.asia-east1.run.app";
     const proto = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
     const origin = `${proto}://${host}`;
 
