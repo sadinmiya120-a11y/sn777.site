@@ -631,7 +631,7 @@ app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay
     // Primary: 2202 for BKASH, 2201 for NAGAD
     const payType = isBkash ? "2202" : "2201";
 
-    const notifyURL = `${origin}/pay1/gopay_notify.php`;
+    const notifyURL = "https://sn777.site/pay1/gopay_notify.php";
     let jumpURL = `${origin}/#/wallet/RechargeHistory`;
     if (rawData.return_url || rawData.page_url || rawData.redirect_url) {
       jumpURL = String(rawData.return_url || rawData.page_url || rawData.redirect_url);
