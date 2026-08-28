@@ -652,7 +652,7 @@ app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay
       return res.status(400).send("<h3>Illegal access: UID or Amount missing</h3>");
     }
 
-    const host = req.get("host") || "ais-dev-sxllemqiu46rogxyb2cm6w-552213914579.asia-east1.run.app";
+    const host = req.get("host") || "sn777.site";
     const proto = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
     const origin = `${proto}://${host}`;
 
