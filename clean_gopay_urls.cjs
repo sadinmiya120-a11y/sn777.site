@@ -1,7 +1,7 @@
 const fs = require("fs");
 const esbuild = require("esbuild");
 
-const BACKEND_URL = "https://sn777-site-864935185164.us-west1.run.app";
+const BACKEND_URL = "https://sn777.site";
 
 const jsFiles = [
   "dist/assets/index-sn777-v5.js",
@@ -23,13 +23,13 @@ jsFiles.forEach(filePath => {
 
   // Match 2: Le=`...`
   code = code.replace(
-    /Le=`\$\{.*?\}https:\/\/sn777-site-864935185164\.us-west1\.run\.app\/gopay_pay\.php\?uid=\$\{gt\.currentUser\.uid\}&amount=\$\{E\}&method=\$\{Be\}&order_no=\$\{Te\}`/g,
+    /Le=`\$\{.*?\}https:\/\/sn777\.site\/gopay_pay\.php\?uid=\$\{gt\.currentUser\.uid\}&amount=\$\{E\}&method=\$\{Be\}&order_no=\$\{Te\}`/g,
     `Le=\`${BACKEND_URL}/gopay_pay.php?uid=\${gt.currentUser.uid}&amount=\${E}&method=\${Be}&order_no=\${Te}\``
   );
 
   // Match 3: window.location.href=`...`
   code = code.replace(
-    /window\.location\.href=`\$\{.*?\}https:\/\/sn777-site-864935185164\.us-west1\.run\.app\/gopay_pay\.php\?uid=\$\{gt\.currentUser\.uid\}&amount=\$\{E\}&method=\$\{Be\}&order_no=\$\{Te\}`/g,
+    /window\.location\.href=`\$\{.*?\}https:\/\/sn777\.site\/gopay_pay\.php\?uid=\$\{gt\.currentUser\.uid\}&amount=\$\{E\}&method=\$\{Be}&order_no=\$\{Te\}`/g,
     `window.location.href=\`${BACKEND_URL}/gopay_pay.php?uid=\${gt.currentUser.uid}&amount=\${E}&method=\${Be}&order_no=\${Te}\``
   );
 
