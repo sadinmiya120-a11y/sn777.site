@@ -60648,28 +60648,6 @@ function $z() {
         if (!gt.currentUser) return;
         const E = oi ? oi.trim() : "";
         if (E && !["binance", "usdt", "usdterc20"].includes(Be)) {
-          if (E.length < 8 || !/^[a-zA-Z0-9_-]+$/.test(E) || /^(.)\1+$/.test(E)) {
-            (Fe("ভুল বা ফেক ট্রানজ্যাকশন আইডি! দয়া করে সঠিক ট্রানজ্যাকশন আইডি প্রদান করুন।"),
-              Je(!0),
-              xe(!1));
-            return;
-          }
-          try {
-            const valRes = await fetch("/api/validate-manual-deposit", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ uid: gt.currentUser.uid, transactionId: E, order_no: Oi, amount: ys })
-            });
-            const valData = await valRes.json();
-            if (!valRes.ok || !valData.success) {
-              (Fe(valData.error || "এই ট্রানজ্যাকশন আইডি ব্যবহার করা যাবে না।"),
-                Je(!0),
-                xe(!1));
-              return;
-            }
-          } catch (valErr) {
-            console.warn("Validation request warning:", valErr);
-          }
           const wt = hn(Ie, "deposits"),
             ft = In(wt, Qt("transactionId", "==", E)),
             Fn = await Gn(ft);
@@ -60680,15 +60658,14 @@ function $z() {
                 const bs = Rs.data();
                 (bs.status === "approved" ||
                   bs.status === "pending" ||
-                  bs.status === "success" ||
-                  bs.credited === true) &&
+                  bs.status === "success") &&
                   (Vn = !0);
               }
             }),
             Vn)
           ) {
             (Fe(
-              "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহৃত হয়েছে। একই আইডি দিয়ে পুনরায় টাকা যোগ করা সম্ভব নয়।",
+              "এই ট্রানজ্যাকশন আইডি আগে ব্যবহৃত হয়েছে। অনুগ্রহ করে সঠিক ট্রানজ্যাকশন আইডি দিন।",
             ),
               Je(!0),
               xe(!1));
