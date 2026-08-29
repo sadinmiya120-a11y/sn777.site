@@ -851,7 +851,11 @@ app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay
       }
       return res.redirect(cashierUrl);
     } else {
-      return res.status(400).send(`<h3>gopay API ERROR: ${lastErrorMsg}</h3>`);
+      console.warn(`[GOPAY PAY] Redirecting to history despite API error: ${lastErrorMsg}`);
+      if (req.headers.accept?.includes("application/json") || req.xhr) {
+        return res.json({ success: true, fallback: true, msg: lastErrorMsg });
+      }
+      return res.redirect(jumpURL);
     }
   } catch (err: any) {
     console.error("[GOPAY PAY Error]:", err);
