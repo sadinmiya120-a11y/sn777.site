@@ -1,0 +1,6 @@
+# Cloudflare Pages / Netlify SPA Redirect Rules
+/gopay_pay.php /gopay_pay.php 200
+/gopay_pay_bkash.php /gopay_pay_bkash.php 200
+/pay1/gopay_notify.php /pay1/gopay_notify.php 200
+/api/* /api/:splat 200
+/* /index.html 200
