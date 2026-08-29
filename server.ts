@@ -669,12 +669,19 @@ app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay
     // Primary: 2202 for BKASH, 2201 for NAGAD
     const payType = isBkash ? "2202" : "2201";
 
-    const notifyURL = "https://sn777.site/pay1/gopay_notify.php";
+    const notifyURL = origin.includes("localhost") || origin.includes("127.0.0.1")
+      ? "https://sn777.site/pay1/gopay_notify.php"
+      : `${origin}/pay1/gopay_notify.php`;
     let jumpURL = `${origin}/#/wallet/RechargeHistory`;
     if (rawData.return_url || rawData.page_url || rawData.redirect_url) {
       jumpURL = String(rawData.return_url || rawData.page_url || rawData.redirect_url);
-    } else if (req.headers.referer && req.headers.referer.includes("sn777.site")) {
-      jumpURL = `https://sn777.site/#/wallet/RechargeHistory`;
+    } else if (req.headers.referer) {
+      try {
+        const refUrl = new URL(req.headers.referer);
+        jumpURL = `${refUrl.origin}/#/wallet/RechargeHistory`;
+      } catch (e) {
+        jumpURL = `${origin}/#/wallet/RechargeHistory`;
+      }
     }
 
     // 100% bonus for deposit >= 550
