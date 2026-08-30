@@ -1744,6 +1744,21 @@ async function startServer() {
     }
   }
 
+  app.get(["/chat", "/livechat", "/chat.html"], (req, res) => {
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    for (const p of possibleDistPaths) {
+      const chatPath = path.join(p, "chat.html");
+      if (fs.existsSync(chatPath)) {
+        return res.sendFile(chatPath);
+      }
+    }
+    const pubChat = path.join(process.cwd(), "public", "chat.html");
+    if (fs.existsSync(pubChat)) {
+      return res.sendFile(pubChat);
+    }
+    res.status(404).send("chat.html not found");
+  });
+
   app.get("*", (req, res) => {
     if (req.path.startsWith("/api/")) {
       return res.status(404).json({ error: "API endpoint not found" });
