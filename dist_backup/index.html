@@ -1,6 +1,17 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <!-- High-Speed Global CDN Preconnect for Tawk.to Chat -->
+    <link rel="preconnect" href="https://tawk.to" crossorigin />
+    <link rel="preconnect" href="https://embed.tawk.to" crossorigin />
+    <link rel="preconnect" href="https://static-v.tawk.to" crossorigin />
+    <link rel="preconnect" href="https://va.tawk.to" crossorigin />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <link rel="dns-prefetch" href="https://tawk.to" />
+    <link rel="dns-prefetch" href="https://embed.tawk.to" />
+    <link rel="dns-prefetch" href="https://static-v.tawk.to" />
+    <link rel="dns-prefetch" href="https://va.tawk.to" />
+
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
@@ -46,145 +57,7 @@
       }
     </style>
 
-    <script type="text/javascript">
-      // Global PWA Event Capturing
-      window.deferredPrompt = null;
-      window.addEventListener('beforeinstallprompt', function(e) {
-        e.preventDefault();
-        window.deferredPrompt = e;
-        console.log("Global beforeinstallprompt event captured!");
-        var event = new CustomEvent('pwaPromptReady', { detail: e });
-        window.dispatchEvent(event);
-      });
-      window.addEventListener('appinstalled', function() {
-        window.deferredPrompt = null;
-        console.log("App was successfully installed!");
-      });
-
-      // Check if we are inside an iframe (like AI Studio preview)
-      var isIframeDev = false;
-      try {
-        isIframeDev = window.self !== window.top;
-      } catch (e) {
-        isIframeDev = true;
-      }
-
-      if ('serviceWorker' in navigator && !isIframeDev) {
-        window.addEventListener('load', function() {
-          navigator.serviceWorker.register('/sw.js')
-            .then(function(reg) {
-              console.log('PWA Service Worker registered successfully with scope: ', reg.scope);
-              
-              // Check for updates periodically or on load
-              reg.update();
-
-              // Auto-reload when new service worker activates
-              reg.addEventListener('updatefound', function() {
-                var installingWorker = reg.installing;
-                if (installingWorker) {
-                  installingWorker.addEventListener('statechange', function() {
-                    if (installingWorker.state === 'activated') {
-                      console.log('New Service Worker activated! Reloading to apply changes...');
-                      window.location.reload();
-                    }
-                  });
-                }
-              });
-            })
-            .catch(function(err) {
-              console.error('PWA Service Worker registration failed: ', err);
-            });
-
-          // Detect active service worker changing and reload
-          var refreshing = false;
-          navigator.serviceWorker.addEventListener('controllerchange', function() {
-            if (!refreshing) {
-              refreshing = true;
-              console.log('Service worker controller changed. Reloading page...');
-              window.location.reload();
-            }
-          });
-        });
-      }
-    </script>
-
-    <!-- Open Graph / Facebook -->
-    <meta property="og:type" content="website" />
-    <meta property="og:title" content="SN777 - Premium Gaming Portal" />
-    <meta property="og:description" content="SN777 অ্যাপে জয়েন করুন এবং ৭৭৭ টাকা বোনাস পান! রেজিস্ট্রেশন করে আজই খেলা শুরু করুন।" />
-    <link rel="preload" as="image" href="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgb5oKSfVei2lIiOLewTPVVES1KI5VX0lLd5hyphenhyphenwXImIDb3lGmEHj2B-BAagrvZ00scvGmVQinhv1YvWxLNRpPkMSSw-XSgKU1lyTOSJMPWwEKuo5K7WeRaDsF0IdA2fqvjNPpy0J3BKi9L9yxY3OQfaZRS_OARVdHBnN0VGExMn77dxLwxPCPNn-gTqvp_H/s1290/Gallery_1783869640543.png" />
-    <script type="text/javascript">
-      var isInIframe = false;
-      try {
-        isInIframe = window.self !== window.top;
-      } catch (e) {
-        isInIframe = true;
-      }
-
-      if (isInIframe) {
-        console.log("Iframe detected - Tawk.to disabled to prevent cross-origin errors.");
-        window.Tawk_API = {
-          isMock: true,
-          hideWidget: function() {},
-          showWidget: function() {},
-          maximize: function() {},
-          minimize: function() {},
-          toggle: function() {},
-          setAttributes: function() {},
-          visitor: {},
-          onLoad: function() {}
-        };
-      } else {
-        var Tawk_API = Tawk_API || {};
-        var Tawk_LoadStart = new Date();
-
-        // Synchronously retrieve cached visitor identity before Tawk connects
-        try {
-          var cached = localStorage.getItem('sn777_cached_visitor');
-          if (cached) {
-            var parsed = JSON.parse(cached);
-            if (parsed && parsed.username) {
-              Tawk_API.visitor = {
-                name: parsed.username,
-                email: parsed.email || ''
-              };
-            }
-          }
-        } catch (e) {
-          console.warn("Tawk local cache retrieval failed:", e);
-        }
-
-        Tawk_API.onLoad = function() {
-          // Widget loaded
-        };
-
-        Tawk_API.customStyle = {
-          visibility: {
-            desktop: {
-              position: 'tr',
-              xOffset: 10,
-              yOffset: 50
-            },
-            mobile: {
-              position: 'tr',
-              xOffset: 10,
-              yOffset: 50
-            }
-          }
-        };
-
-        // Add Tawk.to Script Loader
-        (function(){
-          var s1=document.createElement("script"),s0=document.getElementsByTagName("script")[0];
-          s1.async=true;
-          // REPLACE YOUR_PROPERTY_ID WITH YOUR ACTUAL TAWK.TO PROPERTY ID
-          s1.src='https://embed.tawk.to/YOUR_PROPERTY_ID/default';
-          s1.charset='UTF-8';
-          s1.setAttribute('crossorigin','*');
-          s0.parentNode.insertBefore(s1,s0);
-        })();
-      }
-    </script>
+    
     <script type="text/javascript">
       window.startPaymentVerification = function(orderNo, transactionId, amount, finalCredit, setUserState, onDone) {
         // Create overlay element if it doesn't exist
@@ -348,7 +221,7 @@
         }
       };
     </script>
-    <script type="module" crossorigin src="/assets/index-sn777-v5.js?v=1787729000000"></script>
+    <script type="module" crossorigin src="/assets/index-sn777-v5.js?v=1788088706980"></script>
 
     <link rel="stylesheet" crossorigin href="/assets/index-C0XgLZC6-v3.css">
   
