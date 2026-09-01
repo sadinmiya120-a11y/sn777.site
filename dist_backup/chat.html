@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Live Chat Support - Sn777</title>
+  <title>Sn777 লাইভ চ্যাট সাপোর্ট</title>
   <link rel="preconnect" href="https://tawk.to" crossorigin />
   <link rel="preconnect" href="https://embed.tawk.to" crossorigin />
   <link rel="preconnect" href="https://static-v.tawk.to" crossorigin />
@@ -92,6 +92,14 @@
   </style>
 
   <script type="text/javascript">
+    // Safe error handler for external widgets
+    window.addEventListener("error", function(e) {
+      if (e && e.message && (e.message.indexOf("Tawk") !== -1 || e.message.indexOf("tawk") !== -1)) {
+        e.preventDefault();
+        return true;
+      }
+    });
+
     (function() {
       var urlParams = new URLSearchParams(window.location.search);
       var vName = urlParams.get("name");
@@ -144,9 +152,7 @@
           if (typeof window.Tawk_API.maximize === "function") {
             window.Tawk_API.maximize();
           }
-        } catch(e) {
-          console.warn("Tawk load error:", e);
-        }
+        } catch(e) {}
       };
 
       var s1 = document.createElement("script");
