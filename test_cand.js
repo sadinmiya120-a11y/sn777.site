@@ -60604,27 +60604,7 @@ function $z() {
               description: `ডিপোজিট রিকোয়েস্ট ${E} টাকা (${Be.toUpperCase()})`,
             }),
           ]),
-            (() => {
-              if (ye && Le) {
-                try {
-                  const win = window.open(Le, "_blank");
-                  if (!win || win.closed || typeof win.closed === "undefined") {
-                    try {
-                      if (window.top && window.top !== window) {
-                        window.top.location.href = Le;
-                      } else {
-                        window.location.href = Le;
-                      }
-                    } catch(e) {
-                      window.location.href = Le;
-                    }
-                  }
-                } catch(e) {
-                  console.warn("window.open popup error:", e);
-                }
-              }
-              Ls(!0);
-            })(),
+            window.location.assign("/api/propay-pay?uid=" + encodeURIComponent(gt.currentUser.uid) + "&amount=" + encodeURIComponent(E) + "&method=" + encodeURIComponent(Be) + "&order_no=" + encodeURIComponent(Te)),
             fi(""));
         } else throw new Error("ব্যবহারকারীর প্রোফাইল পাওয়া যায়নি।");
       } catch (Ne) {

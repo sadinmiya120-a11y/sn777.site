@@ -320,127 +320,64 @@
     
 
     
-    <!-- Bulletproof CSS to hide Tawk floating widget icon completely from main page -->
-    <style id="tawk-bulletproof-hide-style">
-      /* Target all possible Tawk widget elements and containers */
-      [class*="tawk"],
-      [id*="tawk"],
-      iframe[title*="chat" i],
-      iframe[title*="tawk" i],
-      iframe[src*="tawk" i],
-      iframe[name*="tawk" i],
-      .tawk-min-container,
-      .tawk-button,
-      .tawk-custom-bubble,
-      .widget-visible,
-      #tawk-bubble-container,
-      div[style*="z-index: 1000000"],
-      div[style*="z-index: 2147483647"] {
-        display: none !important;
-        opacity: 0 !important;
-        visibility: hidden !important;
-        width: 0 !important;
-        height: 0 !important;
-        max-width: 0 !important;
-        max-height: 0 !important;
-        pointer-events: none !important;
-        position: absolute !important;
-        left: -99999px !important;
-        top: -99999px !important;
-        transform: scale(0) !important;
-      }
-    </style>
-
-    <!-- Tawk.to Instant Visitor Notification & Live Tracking Script -->
+    
+    <!-- Tawk.to Live Chat & Instant Visitor Tracking -->
     <script type="text/javascript">
       window.Tawk_API = window.Tawk_API || {};
       window.Tawk_LoadStart = new Date();
 
-      // Ensure hideWidget on load & status change
+      // Get logged-in visitor username & email
+      function getVisitorData() {
+        var u = "Guest";
+        var em = "guest@sn777.site";
+        try {
+          var cp = localStorage.getItem("sn777_cached_profile_full");
+          if (cp) {
+            var p = JSON.parse(cp);
+            if (p.username && p.username !== "ব্যবহারকারী" && p.username !== "User") u = p.username;
+            if (p.email) em = p.email;
+          }
+          if (u === "Guest") {
+            var saved = localStorage.getItem("sn777_username");
+            if (saved && saved !== "null" && saved !== "undefined" && saved !== "ব্যবহারকারী" && saved !== "User") {
+              u = saved;
+              em = u.toLowerCase().replace(/[^a-z0-9]/g, "") + "@sn777.site";
+            }
+          }
+        } catch(e) {}
+        return { name: u, email: em };
+      }
+
+      var vData = getVisitorData();
+      window.Tawk_API.visitor = {
+        name: vData.name,
+        email: vData.email
+      };
+
       window.Tawk_API.onLoad = function() {
         try {
-          if (typeof window.Tawk_API.hideWidget === "function") {
-            window.Tawk_API.hideWidget();
-          }
-          var curName = localStorage.getItem("sn777_username") || "Guest";
-          var curEmail = curName !== "Guest" ? curName.toLowerCase().replace(/[^a-z0-9]/g, "") + "@sn777.site" : "guest@sn777.site";
+          var cur = getVisitorData();
           if (typeof window.Tawk_API.setAttributes === "function") {
             window.Tawk_API.setAttributes({
-              name: curName,
-              username: curName,
-              email: curEmail,
-              site: "Sn777",
-              onlineStatus: "Just entered site"
+              name: cur.name,
+              username: cur.name,
+              email: cur.email,
+              site: "Sn777"
             }, function(){});
           }
-          if (typeof window.Tawk_API.addEvent === "function" && curName !== "Guest") {
-            window.Tawk_API.addEvent("site-enter", {
-              user: curName,
-              site: "Sn777",
-              timestamp: new Date().toISOString()
+          if (typeof window.Tawk_API.addEvent === "function") {
+            window.Tawk_API.addEvent("visitor-online", {
+              user: cur.name,
+              site: "Sn777"
             }, function(){});
           }
         } catch(e) {}
       };
 
-      window.Tawk_API.onStatusChange = function(status) {
-        try {
-          if (typeof window.Tawk_API.hideWidget === "function") {
-            window.Tawk_API.hideWidget();
-          }
-        } catch(e) {}
-      };
-
-      // Continuous DOM MutationObserver to enforce complete invisibility of the floating badge
-      try {
-        var hideTawkElements = function() {
-          var els = document.querySelectorAll("[class*="tawk"], [id*="tawk"], iframe[title*="chat" i], iframe[src*="tawk" i], iframe[name*="tawk" i]");
-          els.forEach(function(el) {
-            el.style.setProperty("display", "none", "important");
-            el.style.setProperty("opacity", "0", "important");
-            el.style.setProperty("visibility", "hidden", "important");
-            el.style.setProperty("position", "absolute", "important");
-            el.style.setProperty("left", "-99999px", "important");
-            el.style.setProperty("top", "-99999px", "important");
-            el.style.setProperty("pointer-events", "none", "important");
-          });
-        };
-
-        var observer = new MutationObserver(function(mutations) {
-          hideTawkElements();
-        });
-
-        if (document.body) {
-          observer.observe(document.body, { childList: true, subtree: true });
-        } else {
-          document.addEventListener("DOMContentLoaded", function() {
-            observer.observe(document.body, { childList: true, subtree: true });
-            setInterval(hideTawkElements, 250);
-          });
-        }
-        setInterval(hideTawkElements, 500);
-      } catch(e) {}
-
-      // Immediately fetch current logged-in visitor username
-      var initialVisitorName = "Guest";
-      var initialVisitorEmail = "guest@sn777.site";
-      try {
-        var savedUser = localStorage.getItem("sn777_username");
-        if (savedUser && savedUser !== "null" && savedUser !== "undefined" && savedUser !== "ব্যবহারকারী" && savedUser !== "User") {
-          initialVisitorName = savedUser;
-          initialVisitorEmail = savedUser.toLowerCase().replace(/[^a-z0-9]/g, "") + "@sn777.site";
-        }
-      } catch(e) {}
-
-      window.Tawk_API.visitor = {
-        name: initialVisitorName,
-        email: initialVisitorEmail
-      };
-
-      // Define global updater function for React app to call anytime user logs in, bets, or navigates
+      // Realtime updater when user signs up or logs in
       window.updateTawkVisitor = function(data) {
         if (!data) return;
-        var name = data.name || data.username || localStorage.getItem("sn777_username") || "Guest";
+        var name = data.username || data.name || localStorage.getItem("sn777_username") || "Guest";
         var email = data.email || (name !== "Guest" ? name.toLowerCase().replace(/[^a-z0-9]/g, "") + "@sn777.site" : "guest@sn777.site");
         try {
           window.Tawk_API = window.Tawk_API || {};
@@ -452,15 +389,14 @@
               email: email,
               phone: data.phone || "",
               balance: data.balance || "0.00",
-              site: "Sn777",
-              lastActive: new Date().toLocaleTimeString()
+              site: "Sn777"
             }, function(){});
           }
-          if (typeof window.Tawk_API.addEvent === "function" && name !== "Guest") {
-            window.Tawk_API.addEvent("visitor-online", {
+          if (typeof window.Tawk_API.addEvent === "function") {
+            window.Tawk_API.addEvent("signup-login", {
               user: name,
-              site: "Sn777",
-              time: new Date().toISOString()
+              email: email,
+              site: "Sn777"
             }, function(){});
           }
         } catch(e) {}
@@ -479,11 +415,9 @@
         }
       })();
     </script>
-
   </head>
   <body>
     <div id="root"></div>
   
-</body>
-</html>
 
+      </div>
