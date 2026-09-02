@@ -1,16 +1,12 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <!-- High-Speed Global CDN Preconnect for Tawk.to Chat -->
-    <link rel="preconnect" href="https://tawk.to" crossorigin />
-    <link rel="preconnect" href="https://embed.tawk.to" crossorigin />
-    <link rel="preconnect" href="https://static-v.tawk.to" crossorigin />
-    <link rel="preconnect" href="https://va.tawk.to" crossorigin />
+    
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
-    <link rel="dns-prefetch" href="https://tawk.to" />
-    <link rel="dns-prefetch" href="https://embed.tawk.to" />
-    <link rel="dns-prefetch" href="https://static-v.tawk.to" />
-    <link rel="dns-prefetch" href="https://va.tawk.to" />
+    
+    
+    
+    
 
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
@@ -246,9 +242,248 @@
     </script>
   
   
-    </head>
+    
+    
+
+  
+    
+
+  
+    
+
+  
+    
+
+
+    
+
+  
+    
+
+  
+    
+    
+
+    
+
+    
+
+  
+    
+
+      <!-- Error Shield & Console Filter for Third-party Widgets -->
+    <script type="text/javascript">
+      (function() {
+        function isWidgetNoise(args) {
+          try {
+            for (var i = 0; i < args.length; i++) {
+              var str = typeof args[i] === "string" ? args[i] : (args[i] && args[i].toString ? String(args[i]) : "");
+              if (/tawk/i.test(str) || /Error report sent/i.test(str) || /Logger/i.test(str)) {
+                return true;
+              }
+            }
+          } catch(e) {}
+          return false;
+        }
+
+        var _log = console.log, _warn = console.warn, _err = console.error, _info = console.info, _debug = console.debug;
+        console.log = function() { if (!isWidgetNoise(arguments)) _log.apply(console, arguments); };
+        console.warn = function() { if (!isWidgetNoise(arguments)) _warn.apply(console, arguments); };
+        console.error = function() { if (!isWidgetNoise(arguments)) _err.apply(console, arguments); };
+        console.info = function() { if (!isWidgetNoise(arguments)) _info.apply(console, arguments); };
+        console.debug = function() { if (!isWidgetNoise(arguments)) _debug.apply(console, arguments); };
+
+        window.addEventListener("error", function(e) {
+          if (e && ((e.filename && /tawk/i.test(e.filename)) || (e.message && (/tawk/i.test(e.message) || /Error report sent/i.test(e.message))))) {
+            if (e.preventDefault) e.preventDefault();
+            if (e.stopPropagation) e.stopPropagation();
+            return true;
+          }
+        }, true);
+
+        window.addEventListener("unhandledrejection", function(e) {
+          if (e && e.reason && (/tawk/i.test(String(e.reason)) || /Error report sent/i.test(String(e.reason)))) {
+            if (e.preventDefault) e.preventDefault();
+            if (e.stopPropagation) e.stopPropagation();
+          }
+        }, true);
+      })();
+    </script>
+
+    <!-- High-Speed Preconnect for Tawk.to Live Chat -->
+    <link rel="preconnect" href="https://tawk.to" crossorigin />
+    <link rel="preconnect" href="https://embed.tawk.to" crossorigin />
+    <link rel="preconnect" href="https://static-v.tawk.to" crossorigin />
+    <link rel="preconnect" href="https://va.tawk.to" crossorigin />
+
+    <!-- Style: Keep Tawk widget hidden from main page until user opens chat -->
+    
+
+    
+    <!-- Bulletproof CSS to hide Tawk floating widget icon completely from main page -->
+    <style id="tawk-bulletproof-hide-style">
+      /* Target all possible Tawk widget elements and containers */
+      [class*="tawk"],
+      [id*="tawk"],
+      iframe[title*="chat" i],
+      iframe[title*="tawk" i],
+      iframe[src*="tawk" i],
+      iframe[name*="tawk" i],
+      .tawk-min-container,
+      .tawk-button,
+      .tawk-custom-bubble,
+      .widget-visible,
+      #tawk-bubble-container,
+      div[style*="z-index: 1000000"],
+      div[style*="z-index: 2147483647"] {
+        display: none !important;
+        opacity: 0 !important;
+        visibility: hidden !important;
+        width: 0 !important;
+        height: 0 !important;
+        max-width: 0 !important;
+        max-height: 0 !important;
+        pointer-events: none !important;
+        position: absolute !important;
+        left: -99999px !important;
+        top: -99999px !important;
+        transform: scale(0) !important;
+      }
+    </style>
+
+    <!-- Tawk.to Instant Visitor Notification & Live Tracking Script -->
+    <script type="text/javascript">
+      window.Tawk_API = window.Tawk_API || {};
+      window.Tawk_LoadStart = new Date();
+
+      // Ensure hideWidget on load & status change
+      window.Tawk_API.onLoad = function() {
+        try {
+          if (typeof window.Tawk_API.hideWidget === "function") {
+            window.Tawk_API.hideWidget();
+          }
+          var curName = localStorage.getItem("sn777_username") || "Guest";
+          var curEmail = curName !== "Guest" ? curName.toLowerCase().replace(/[^a-z0-9]/g, "") + "@sn777.site" : "guest@sn777.site";
+          if (typeof window.Tawk_API.setAttributes === "function") {
+            window.Tawk_API.setAttributes({
+              name: curName,
+              username: curName,
+              email: curEmail,
+              site: "Sn777",
+              onlineStatus: "Just entered site"
+            }, function(){});
+          }
+          if (typeof window.Tawk_API.addEvent === "function" && curName !== "Guest") {
+            window.Tawk_API.addEvent("site-enter", {
+              user: curName,
+              site: "Sn777",
+              timestamp: new Date().toISOString()
+            }, function(){});
+          }
+        } catch(e) {}
+      };
+
+      window.Tawk_API.onStatusChange = function(status) {
+        try {
+          if (typeof window.Tawk_API.hideWidget === "function") {
+            window.Tawk_API.hideWidget();
+          }
+        } catch(e) {}
+      };
+
+      // Continuous DOM MutationObserver to enforce complete invisibility of the floating badge
+      try {
+        var hideTawkElements = function() {
+          var els = document.querySelectorAll("[class*="tawk"], [id*="tawk"], iframe[title*="chat" i], iframe[src*="tawk" i], iframe[name*="tawk" i]");
+          els.forEach(function(el) {
+            el.style.setProperty("display", "none", "important");
+            el.style.setProperty("opacity", "0", "important");
+            el.style.setProperty("visibility", "hidden", "important");
+            el.style.setProperty("position", "absolute", "important");
+            el.style.setProperty("left", "-99999px", "important");
+            el.style.setProperty("top", "-99999px", "important");
+            el.style.setProperty("pointer-events", "none", "important");
+          });
+        };
+
+        var observer = new MutationObserver(function(mutations) {
+          hideTawkElements();
+        });
+
+        if (document.body) {
+          observer.observe(document.body, { childList: true, subtree: true });
+        } else {
+          document.addEventListener("DOMContentLoaded", function() {
+            observer.observe(document.body, { childList: true, subtree: true });
+            setInterval(hideTawkElements, 250);
+          });
+        }
+        setInterval(hideTawkElements, 500);
+      } catch(e) {}
+
+      // Immediately fetch current logged-in visitor username
+      var initialVisitorName = "Guest";
+      var initialVisitorEmail = "guest@sn777.site";
+      try {
+        var savedUser = localStorage.getItem("sn777_username");
+        if (savedUser && savedUser !== "null" && savedUser !== "undefined" && savedUser !== "ব্যবহারকারী" && savedUser !== "User") {
+          initialVisitorName = savedUser;
+          initialVisitorEmail = savedUser.toLowerCase().replace(/[^a-z0-9]/g, "") + "@sn777.site";
+        }
+      } catch(e) {}
+
+      window.Tawk_API.visitor = {
+        name: initialVisitorName,
+        email: initialVisitorEmail
+      };
+
+      // Define global updater function for React app to call anytime user logs in, bets, or navigates
+      window.updateTawkVisitor = function(data) {
+        if (!data) return;
+        var name = data.name || data.username || localStorage.getItem("sn777_username") || "Guest";
+        var email = data.email || (name !== "Guest" ? name.toLowerCase().replace(/[^a-z0-9]/g, "") + "@sn777.site" : "guest@sn777.site");
+        try {
+          window.Tawk_API = window.Tawk_API || {};
+          window.Tawk_API.visitor = { name: name, email: email };
+          if (typeof window.Tawk_API.setAttributes === "function") {
+            window.Tawk_API.setAttributes({
+              name: name,
+              username: name,
+              email: email,
+              phone: data.phone || "",
+              balance: data.balance || "0.00",
+              site: "Sn777",
+              lastActive: new Date().toLocaleTimeString()
+            }, function(){});
+          }
+          if (typeof window.Tawk_API.addEvent === "function" && name !== "Guest") {
+            window.Tawk_API.addEvent("visitor-online", {
+              user: name,
+              site: "Sn777",
+              time: new Date().toISOString()
+            }, function(){});
+          }
+        } catch(e) {}
+      };
+
+      (function(){
+        var s1 = document.createElement("script"), s0 = document.getElementsByTagName("script")[0];
+        s1.async = true;
+        s1.src = "https://embed.tawk.to/6a00124c06a7a01c3394a833/default";
+        s1.charset = "UTF-8";
+        s1.setAttribute("crossorigin", "*");
+        if (s0 && s0.parentNode) {
+          s0.parentNode.insertBefore(s1, s0);
+        } else {
+          document.head.appendChild(s1);
+        }
+      })();
+    </script>
+
+  </head>
   <body>
     <div id="root"></div>
-  </body>
+  
+</body>
 </html>
 

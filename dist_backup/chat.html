@@ -2,13 +2,12 @@
 <html lang="bn">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Sn777 লাইভ চ্যাট সাপোর্ট</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Sn777 লাইভ সাপোর্ট চ্যাট</title>
   <link rel="preconnect" href="https://tawk.to" crossorigin />
   <link rel="preconnect" href="https://embed.tawk.to" crossorigin />
   <link rel="preconnect" href="https://static-v.tawk.to" crossorigin />
   <link rel="preconnect" href="https://va.tawk.to" crossorigin />
-  
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
@@ -17,82 +16,97 @@
       background-color: #0b0f19;
       color: #ffffff;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
       overflow: hidden;
-    }
-    .chat-container {
       display: flex;
       flex-direction: column;
+    }
+    #chat-wrapper {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+    #tawk_chat_container {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+    }
+    .top-bar {
+      height: 52px;
+      background: #0f172a;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
       align-items: center;
-      text-align: center;
-      padding: 24px;
-      max-width: 400px;
-      width: 90%;
-      background: #141b2d;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 20px;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      justify-content: space-between;
+      padding: 0 16px;
+      z-index: 20;
+    }
+    .top-bar .title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #fbbf24;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .top-bar .back-link {
+      color: #94a3b8;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 14px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      transition: all 0.2s;
+    }
+    .top-bar .back-link:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: #ffffff;
+    }
+    .loader-container {
+      position: absolute;
+      top: 52px;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background-color: #0b0f19;
+      color: #94a3b8;
+      z-index: 10;
+      transition: opacity 0.5s ease;
     }
     .spinner {
-      width: 50px;
-      height: 50px;
       border: 4px solid rgba(234, 179, 8, 0.2);
-      border-top-color: #eab308;
+      width: 44px;
+      height: 44px;
       border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-      margin-bottom: 20px;
+      border-left-color: #fbbf24;
+      animation: spin 0.9s linear infinite;
+      margin-bottom: 16px;
     }
     @keyframes spin {
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
-    .title {
-      font-size: 20px;
-      font-weight: 800;
-      color: #eab308;
-      margin-bottom: 8px;
-    }
-    .subtitle {
+    .loader-text {
       font-size: 14px;
-      color: #94a3b8;
-      margin-bottom: 16px;
-    }
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 14px;
-      background: rgba(234, 179, 8, 0.15);
-      border: 1px solid rgba(234, 179, 8, 0.3);
-      border-radius: 9999px;
-      font-size: 13px;
-      font-weight: 700;
-      color: #fef08a;
-      margin-bottom: 20px;
-    }
-    .back-btn {
-      display: inline-block;
-      padding: 10px 24px;
-      background: #1e293b;
-      color: #cbd5e1;
-      text-decoration: none;
-      font-size: 14px;
+      color: #e2e8f0;
+      margin-bottom: 4px;
       font-weight: 600;
-      border-radius: 10px;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      transition: all 0.2s;
     }
-    .back-btn:hover {
-      background: #334155;
-      color: #ffffff;
+    .loader-subtext {
+      font-size: 12px;
+      color: #64748b;
     }
   </style>
-
   <script type="text/javascript">
-    // Safe error handler for external widgets
     window.addEventListener("error", function(e) {
       if (e && e.message && (e.message.indexOf("Tawk") !== -1 || e.message.indexOf("tawk") !== -1)) {
         e.preventDefault();
@@ -100,63 +114,60 @@
       }
     });
 
-    (function() {
-      var urlParams = new URLSearchParams(window.location.search);
-      var vName = urlParams.get("name");
-      var vEmail = urlParams.get("email");
-      var vPhone = urlParams.get("phone") || "";
-      var vBalance = urlParams.get("balance") || "0.00";
+    var urlParams = new URLSearchParams(window.location.search);
+    var vName = urlParams.get("name") || "Guest";
+    var vEmail = urlParams.get("email") || "guest@sn777.top";
+    var vPhone = urlParams.get("phone") || "";
+    var vBal = urlParams.get("balance") || "0.00";
 
+    try {
+      if (vName === "Guest") {
+        var u = localStorage.getItem("sn777_username");
+        if (u && u !== "null" && u !== "undefined") vName = u;
+      }
+    } catch(e) {}
+
+    window.Tawk_API = window.Tawk_API || {};
+    window.Tawk_LoadStart = new Date();
+
+    window.Tawk_API.visitor = {
+      name: vName,
+      email: vEmail
+    };
+
+    window.Tawk_API.embedded = "tawk_chat_container";
+
+    window.Tawk_API.onLoad = function() {
       try {
-        if (!vName || vName === "Guest") {
-          var lsU = localStorage.getItem("sn777_username");
-          if (lsU && lsU !== "ব্যবহারকারী" && lsU !== "User") {
-            vName = lsU;
-          } else {
-            var cv = localStorage.getItem("sn777_cached_visitor");
-            if (cv) {
-              var p = JSON.parse(cv);
-              if (p.name && p.name !== "Guest") vName = p.name;
-            }
-          }
+        if (typeof window.Tawk_API.setAttributes === "function") {
+          window.Tawk_API.setAttributes({
+            name: vName,
+            username: vName,
+            email: vEmail,
+            phone: vPhone,
+            balance: vBal,
+            userId: vName
+          }, function() {});
         }
       } catch(e) {}
 
-      if (!vName || vName === "null" || vName === "undefined" || vName === "ব্যবহারকারী") {
-        vName = "User";
+      var loader = document.getElementById("loader");
+      if (loader) {
+        loader.style.opacity = "0";
+        setTimeout(function() { loader.style.display = "none"; }, 500);
       }
-      if (!vEmail || vEmail === "null" || vEmail === "undefined" || vEmail === "guest@sn777.top") {
-        vEmail = vName !== "User" && vName !== "Guest" ? (vName + "@sn777.com") : "user@sn777.com";
+    };
+
+    setTimeout(function() {
+      var loader = document.getElementById("loader");
+      if (loader && loader.style.display !== "none") {
+        loader.style.opacity = "0";
+        setTimeout(function() { loader.style.display = "none"; }, 500);
       }
-      
-      window.Tawk_API = window.Tawk_API || {};
-      window.Tawk_LoadStart = new Date();
+    }, 6000);
 
-      window.Tawk_API.visitor = {
-        name: vName,
-        email: vEmail
-      };
-
-      window.Tawk_API.onLoad = function() {
-        try {
-          if (typeof window.Tawk_API.setAttributes === "function") {
-            window.Tawk_API.setAttributes({
-              name: vName,
-              username: vName,
-              email: vEmail,
-              phone: vPhone,
-              balance: vBalance,
-              userId: vName
-            }, function() {});
-          }
-          if (typeof window.Tawk_API.maximize === "function") {
-            window.Tawk_API.maximize();
-          }
-        } catch(e) {}
-      };
-
-      var s1 = document.createElement("script");
-      var s0 = document.getElementsByTagName("script")[0];
+    (function() {
+      var s1 = document.createElement("script"), s0 = document.getElementsByTagName("script")[0];
       s1.async = true;
       s1.src = "https://embed.tawk.to/6a00124c06a7a01c3394a833/default";
       s1.charset = "UTF-8";
@@ -170,31 +181,20 @@
   </script>
 </head>
 <body>
-  <div class="chat-container">
-    <div class="spinner"></div>
-    <div class="title">Sn777 লাইভ সাপোর্ট</div>
-    <div class="subtitle">কানেক্ট করা হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...</div>
-    <div class="badge">
-      <span>👤</span>
-      <span id="display-visitor-name">Guest</span>
+  <div class="top-bar">
+    <div class="title">
+      <span>💬</span>
+      <span>Sn777 লাইভ সাপোর্ট</span>
     </div>
-    <a href="/" class="back-btn">← গেমে ফিরে যান</a>
+    <a href="/" class="back-link">← গেমে ফিরে যান</a>
   </div>
-
-  <script type="text/javascript">
-    try {
-      var urlParams = new URLSearchParams(window.location.search);
-      var name = urlParams.get("name");
-      if (!name || name === "Guest") {
-        var lsU = localStorage.getItem("sn777_username");
-        if (lsU && lsU !== "ব্যবহারকারী" && lsU !== "User") name = lsU;
-      }
-      if (!name || name === "null" || name === "undefined" || name === "ব্যবহারকারী") name = "User";
-      var nameEl = document.getElementById("display-visitor-name");
-      if (nameEl) {
-        nameEl.innerText = name;
-      }
-    } catch(e) {}
-  </script>
+  <div class="loader-container" id="loader">
+    <div class="spinner"></div>
+    <div class="loader-text">২৪/৭ লাইভ সাপোর্ট কানেক্ট হচ্ছে...</div>
+    <div class="loader-subtext">অনুগ্রহ করে কয়েক সেকেন্ড অপেক্ষা করুন</div>
+  </div>
+  <div id="chat-wrapper">
+    <div id="tawk_chat_container"></div>
+  </div>
 </body>
 </html>

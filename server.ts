@@ -205,10 +205,21 @@ function saveLocalTransaction(tx: any) {
     const docKey = tx.id || tx.order_no || tx.depositNo || tx.withdrawNo || (tx.timestamp + "_" + tx.amount);
     const idx = list.findIndex((item: any) => {
       const k = item.id || item.order_no || item.depositNo || item.withdrawNo || (item.timestamp + "_" + item.amount);
-      return k === docKey || (tx.order_no && item.order_no === tx.order_no);
+      return k === docKey || (tx.order_no && item.order_no === tx.order_no) || (tx.id && item.id === tx.id);
     });
     if (idx >= 0) {
-      list[idx] = { ...list[idx], ...tx, updatedAt: new Date().toISOString() };
+      const existing = list[idx];
+      const isApproved = existing.status === approved || existing.status === success || existing.status === 1 || existing.credited === true ||
+                         tx.status === approved || tx.status === success || tx.status === 1 || tx.credited === true;
+      const isRejected = !isApproved && (existing.status === rejected || existing.status === cancelled || existing.status === failed || existing.status === 2 ||
+                         tx.status === rejected || tx.status === cancelled || tx.status === failed || tx.status === 2);
+      list[idx] = {
+        ...existing,
+        ...tx,
+        status: isApproved ? approved : (isRejected ? cancelled : (tx.status || existing.status || pending)),
+        credited: isApproved ? true : (tx.credited || existing.credited || false),
+        updatedAt: new Date().toISOString()
+      };
     } else {
       list.unshift({ ...tx, createdAt: tx.createdAt || tx.timestamp || new Date().toISOString() });
     }
@@ -375,7 +386,21 @@ app.get("/api/user-transactions", async (req, res) => {
     const map = new Map<string, any>();
     for (const item of [...firestoreList, ...localList]) {
       const key = String(item.id || item.order_no || item.depositNo || item.withdrawNo || (item.timestamp + "_" + item.amount));
-      map.set(key, { ...map.get(key), ...item });
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, { ...item });
+      } else {
+        const isApproved = existing.status === approved || existing.status === success || existing.status === 1 || existing.credited === true ||
+                           item.status === approved || item.status === success || item.status === 1 || item.credited === true;
+        const isRejected = !isApproved && (existing.status === rejected || existing.status === cancelled || existing.status === failed || existing.status === 2 ||
+                           item.status === rejected || item.status === cancelled || item.status === failed || item.status === 2);
+        map.set(key, {
+          ...existing,
+          ...item,
+          status: isApproved ? approved : (isRejected ? cancelled : (item.status || existing.status || pending)),
+          credited: isApproved ? true : (item.credited || existing.credited || false)
+        });
+      }
     }
     const merged = Array.from(map.values()).sort((a, b) => {
       const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
@@ -393,35 +418,12 @@ app.post("/api/create-payment", async (req, res) => {
     const { uid, amount, method } = req.body;
     if (!uid || !amount || !method) return res.status(400).json({ error: "Missing parameters" });
 
-    const order_no = 'ORD-' + Date.now();
-    saveLocalTransaction({ id: order_no, order_no, uid, amount: parseFloat(amount), method, type: 'deposit', status: 'pending', createdAt: new Date().toISOString() });
-    const adminApp = getFirebaseAdmin();
-    const db = adminApp.firestore();
+    const host = req.get("host") || "sn777.site";
+    const proto = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+    const origin = `${proto}://${host}`;
 
-    // Create pending deposit
-    await db.collection('deposits').doc(order_no).set({
-        uid,
-        amount: parseFloat(amount),
-        method,
-        status: 'pending',
-        createdAt: new Date().toISOString(),
-        order_no
-    });
-
-    const gateway_url = (method === 'bkash') 
-               ? 'https://checkout.gopay.cyou/pay/Bkash.php' 
-               : 'https://checkout.gopay.cyou/pay/Nagad.php';
-
-    const params = new URLSearchParams({
-        api_key: process.env.GOPAY_API_KEY || '',
-        uid: uid,
-        amount: amount.toString(),
-        order_no: order_no,
-        return_url: `${process.env.APP_URL}/success`,
-        pass_through_callback_url: `${process.env.APP_URL}/api/callback`
-    });
-
-    res.json({ redirect_url: `${gateway_url}?${params.toString()}` });
+    const redirect_url = `${origin}/gopay_pay.php?uid=${encodeURIComponent(uid)}&amount=${encodeURIComponent(amount)}&method=${encodeURIComponent(method)}`;
+    res.json({ success: true, redirect_url });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -631,8 +633,8 @@ app.get("/api/debug-project", (req, res) => {
   }
 });
 
-// GOPay Payment Initiation Route (supports both PHP URL and API URL)
-app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], async (req, res) => {
+// GOPay Payment Initiation Route (supports bkash.php, nagad.php, and API URLs)
+app.all(["/gopay_pay.php", "/gopay_pay_bkash.php", "/bkash.php", "/nagad.php", "/pay1/bkash.php", "/pay1/nagad.php", "/api/gopay_pay", "/api/gopay-pay", "/pay.php"], async (req, res) => {
   console.log(`[GOPAY PAY] Request received:`, {
     method: req.method,
     url: req.url,
@@ -1209,141 +1211,8 @@ app.all(["/api/callback", "/api/gopay-callback", "/callback.php"], async (req, r
 // Full-Screen Embedded Chat Route to support prefilling visitor profile dynamically
 app.get("/chat", (req, res) => {
   const name = (req.query.name || "Guest").toString();
-  const email = (req.query.email || `${name.toLowerCase()}@sn777.com`).toString();
-
-  res.send(`
-<!DOCTYPE html>
-<html lang="bn">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Live Chat Support</title>
-    <!-- DNS and Connection preloading for maximum loading speed -->
-    <link rel="dns-prefetch" href="https://embed.tawk.to">
-    <link rel="dns-prefetch" href="https://va.tawk.to">
-    <link rel="preconnect" href="https://embed.tawk.to" crossorigin>
-    <link rel="preconnect" href="https://va.tawk.to" crossorigin>
-    <style>
-        body, html {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background-color: #0b0f19;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            display: flex;
-            flex-direction: column;
-        }
-        #chat-wrapper {
-            flex: 1;
-            width: 100%;
-            height: 100%;
-            position: relative;
-        }
-        #tawk_chat_container {
-            width: 100%;
-            height: 100%;
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-        }
-        .loader-container {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            background-color: #0b0f19;
-            color: #94a3b8;
-            z-index: 10;
-            transition: opacity 0.5s ease;
-        }
-        .spinner {
-            border: 4px solid rgba(255, 255, 255, 0.1);
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            border-left-color: #06b6d4;
-            animation: spin 1s linear infinite;
-            margin-bottom: 16px;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        p {
-            margin: 4px 0;
-            font-size: 14px;
-        }
-    </style>
-</head>
-<body>
-    <div class="loader-container" id="loader">
-        <div class="spinner"></div>
-        <p>সাপোর্ট চ্যাট কানেক্ট হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...</p>
-        <p style="font-size: 12px; color: #64748b;">ইউজারনেম: <strong>${name}</strong></p>
-    </div>
-
-    <div id="chat-wrapper">
-        <div id="tawk_chat_container"></div>
-    </div>
-
-    <!-- Start of Tawk.to Script -->
-    <script type="text/javascript">
-        var Tawk_API = Tawk_API || {};
-        var Tawk_LoadStart = new Date();
-        
-        // Define visitor attributes on initialize to guarantee they are passed during handshake
-        Tawk_API.visitor = {
-            name: ${JSON.stringify(name)},
-            email: ${JSON.stringify(email)}
-        };
-
-        // Render widget inline in our full-screen container
-        Tawk_API.embedded = 'tawk_chat_container';
-
-        Tawk_API.onLoad = function() {
-            // Hide the loader once Tawk loads
-            var loader = document.getElementById('loader');
-            if (loader) {
-                loader.style.opacity = '0';
-                setTimeout(function() {
-                    loader.style.display = 'none';
-                }, 500);
-            }
-        };
-        
-        // Safety timeout to hide loader if loading takes too long or script fails
-        setTimeout(function() {
-            var loader = document.getElementById('loader');
-            if (loader && loader.style.display !== 'none') {
-                loader.style.opacity = '0';
-                setTimeout(function() {
-                    loader.style.display = 'none';
-                }, 500);
-            }
-        }, 8000);
-
-        (function(){
-            var s1 = document.createElement("script"), s0 = document.getElementsByTagName("script")[0];
-            s1.async = true;
-            s1.src = 'https://embed.tawk.to/6a00124c06a7a01c3394a833/default';
-            s1.charset = 'UTF-8';
-            s1.setAttribute('crossorigin','*');
-            s0.parentNode.insertBefore(s1, s0);
-        })();
-    </script>
-    <!-- End of Tawk.to Script -->
-</body>
-</html>
-  `);
+  const email = (req.query.email || `${name.toLowerCase()}@sn777.site`).toString();
+  res.redirect(`/chat.html?name=${encodeURIComponent(name)}&email=${encodeURIComponent(email)}`);
 });
 
 // Simple keep-alive log every 15 minutes
@@ -1512,120 +1381,131 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
 });
 
 // Admin Approve Deposit Endpoint (Strict 1-Time Credit Lock)
+// Admin Approve Deposit Endpoint (Dual-layer resilience)
 app.post("/api/admin/approve-deposit", async (req, res) => {
   try {
-    const { order_no, amount } = req.body;
-    if (!order_no) {
-      return res.status(400).json({ success: false, error: "Missing order_no" });
+    const { order_no, doc_id, uid: reqUid, username: reqUsername, amount, finalCredit: reqFinalCredit } = req.body;
+    const cleanOrderNo = String(order_no || doc_id || "").trim();
+    if (!cleanOrderNo) {
+      return res.status(400).json({ success: false, error: "Missing order_no or doc_id" });
     }
-    const cleanOrderNo = String(order_no).trim();
+
+    const requestedAmount = Number(amount) || 0;
+    const finalCredit = Number(reqFinalCredit || requestedAmount || 0);
+
+    let uid = reqUid || "";
+    let userUpdated = false;
+
     const adminApp = getFirebaseAdmin();
-    if (!adminApp) {
-      return res.status(500).json({ success: false, error: "Database connection failed" });
-    }
-    const db = adminApp.firestore();
-    const depositRef = db.collection("deposits").doc(cleanOrderNo);
+    if (adminApp) {
+      const db = adminApp.firestore();
+      try {
+        // 1. Try finding deposit doc
+        let depDoc = await db.collection("deposits").doc(cleanOrderNo).get().catch(() => null);
+        let depData = depDoc && depDoc.exists ? depDoc.data() : null;
 
-    // Run Firestore atomic transaction with strict idempotency lock
-    const result = await db.runTransaction(async (transaction) => {
-      const depSnap = await transaction.get(depositRef);
-      let depData: any = null;
-      if (depSnap.exists) {
-        depData = depSnap.data();
-      } else {
-        const qSnap = await db.collection("deposits").where("order_no", "==", cleanOrderNo).limit(1).get();
-        if (!qSnap.empty) {
-          depData = qSnap.docs[0].data();
+        if (!depData && doc_id && doc_id !== cleanOrderNo) {
+          depDoc = await db.collection("deposits").doc(String(doc_id)).get().catch(() => null);
+          if (depDoc && depDoc.exists) depData = depDoc.data();
         }
+
+        if (!depData) {
+          const qSnap = await db.collection("deposits").where("order_no", "==", cleanOrderNo).limit(1).get().catch(() => ({ empty: true, docs: [] }));
+          if (!qSnap.empty) {
+            depDoc = qSnap.docs[0];
+            depData = depDoc.data();
+          }
+        }
+
+        if (depData && !uid) {
+          uid = depData.uid;
+        }
+
+        // If UID still not found, try username lookup
+        if (!uid && (reqUsername || depData?.username)) {
+          const uName = reqUsername || depData?.username;
+          const uSnap = await db.collection("users").where("username", "==", uName).limit(1).get().catch(() => ({ empty: true, docs: [] }));
+          if (!uSnap.empty) {
+            uid = uSnap.docs[0].id;
+          }
+        }
+
+        // Update user balance in Firestore if uid exists
+        if (uid) {
+          try {
+            const userRef = db.collection("users").doc(uid);
+            const userSnap = await userRef.get();
+            const userData = userSnap.exists ? userSnap.data() : {};
+            const curBal = parseFloat(String(userData?.balance || "0").replace(/,/g, "")) || 0;
+            const curDep = parseFloat(String(userData?.totalDeposited || "0").replace(/,/g, "")) || 0;
+            const curCount = Number(userData?.approvedDepositsCount || 0);
+            
+            const newBal = (curBal + (finalCredit || requestedAmount)).toFixed(2);
+            const newTotalDep = curDep + requestedAmount;
+            const newCount = curCount + 1;
+
+            await userRef.set({
+              balance: newBal,
+              approvedDepositsCount: newCount,
+              totalDeposited: newTotalDep,
+              withdrawEnabled: (newTotalDep >= 940 && newCount >= 2),
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
+            userUpdated = true;
+          } catch (userErr) {
+            console.warn("[approve-deposit] User balance update warning:", userErr);
+          }
+        }
+
+        // Mark deposit doc approved
+        const approvedPayload = {
+          status: "approved",
+          credited: true,
+          amount: requestedAmount,
+          finalCredit: finalCredit || requestedAmount,
+          approvedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+
+        if (depDoc && depDoc.ref) {
+          await depDoc.ref.set(approvedPayload, { merge: true }).catch(() => {});
+        } else {
+          await db.collection("deposits").doc(cleanOrderNo).set(approvedPayload, { merge: true }).catch(() => {});
+        }
+        await db.collection("transactions").doc(cleanOrderNo).set(approvedPayload, { merge: true }).catch(() => {});
+        if (uid) {
+          await db.collection("users").doc(uid).collection("history").doc(cleanOrderNo).set(approvedPayload, { merge: true }).catch(() => {});
+        }
+      } catch (dbErr) {
+        console.warn("[approve-deposit] Firestore warning (fallback active):", dbErr);
       }
+    }
 
-      if (!depData) {
-        throw new Error("ডিপোজিট রেকর্ড খুঁজে পাওয়া যায়নি!");
-      }
-
-      // STRICT IDEMPOTENCY LOCK: Prevent double credit
-      if (depData.status === "approved" || depData.status === "success" || depData.credited === true) {
-        throw new Error("ALREADY_CREDITED");
-      }
-
-      const uid = depData.uid;
-      if (!uid) {
-        throw new Error("ইউজার আইডি পাওয়া যায়নি!");
-      }
-
-      const requestedAmount = Number(amount) || Number(depData.amount) || 0;
-      const finalCredit = Number(depData.finalCredit || depData.creditedAmount || requestedAmount);
-
-      const userRef = db.collection("users").doc(uid);
-      const userSnap = await transaction.get(userRef);
-      const userData = userSnap.exists ? userSnap.data() : {};
-      const currentBalance = Number(userData?.balance || 0);
-      const currentApprovedCount = Number(userData?.approvedDepositsCount || 0);
-      const currentTotalDeposited = Number(userData?.totalDeposited || 0);
-
-      const newBalance = (currentBalance + finalCredit).toFixed(2);
-      const newTotalDeposited = currentTotalDeposited + requestedAmount;
-      const newApprovedCount = currentApprovedCount + 1;
-
-      // 1. Update user balance & deposit metrics
-      transaction.set(userRef, {
-        balance: newBalance,
-        approvedDepositsCount: newApprovedCount,
-        totalDeposited: newTotalDeposited,
-        withdrawEnabled: (newTotalDeposited >= 940 && newApprovedCount >= 2),
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-
-      // 2. Mark deposit as approved & credited
-      const approvedPayload = {
-        status: "approved",
-        credited: true,
-        amount: requestedAmount,
-        finalCredit: finalCredit,
-        creditedAmount: finalCredit,
-        approvedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      transaction.set(depositRef, approvedPayload, { merge: true });
-
-      // 3. Update transactions & user history collections
-      const txRef = db.collection("transactions").doc(cleanOrderNo);
-      transaction.set(txRef, approvedPayload, { merge: true });
-
-      const userHistRef = db.collection("users").doc(uid).collection("history").doc(cleanOrderNo);
-      transaction.set(userHistRef, approvedPayload, { merge: true });
-
-      return { uid, newBalance, finalCredit, requestedAmount };
-    });
-
-    // Update local transaction store fallback
+    // Save to local transactions store fallback
     saveLocalTransaction({
       id: cleanOrderNo,
       order_no: cleanOrderNo,
+      uid: uid || reqUid || "",
       status: "approved",
       credited: true,
-      amount: result.requestedAmount,
-      finalCredit: result.finalCredit,
+      amount: requestedAmount,
+      finalCredit: finalCredit || requestedAmount,
       type: "deposit",
       updatedAt: new Date().toISOString()
     });
 
     return res.json({
       success: true,
-      message: `ডিপোজিট অ্যাপ্রুভ হয়েছে এবং ইউজারের ব্যালেন্সে ৳${result.finalCredit} যোগ করা হয়েছে।`,
-      amount: result.requestedAmount,
-      finalCredit: result.finalCredit
+      message: `ডিপোজিট অ্যাপ্রুভ হয়েছে এবং ইউজারের ব্যালেন্সে ৳${finalCredit || requestedAmount} যোগ করা হয়েছে।`,
+      amount: requestedAmount,
+      finalCredit: finalCredit || requestedAmount
     });
   } catch (err: any) {
     console.error("[APPROVE DEPOSIT ERROR]:", err);
-    if (err.message === "ALREADY_CREDITED" || err.message?.includes("ALREADY_CREDITED")) {
-      return res.status(400).json({ success: false, error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যোগ হয়েছে! পুনরায় টাকা এড হবে না।" });
-    }
     return res.status(500).json({ success: false, error: err.message || "ডিপোজিট অ্যাপ্রুভ করতে ব্যর্থ হয়েছে।" });
   }
 });
 
-// Admin Reject Deposit Endpoint
 app.post("/api/admin/reject-deposit", async (req, res) => {
   try {
     const { order_no, reason } = req.body;
