@@ -283,6 +283,15 @@ app.post("/api/record-transaction", async (req, res) => {
 
     const docId = tx.id || tx.order_no || tx.depositNo || tx.withdrawNo || ("tx_" + Date.now());
     let safeTx = { ...tx };
+    safeTx.id = String(docId);
+    safeTx.order_no = safeTx.order_no || String(docId);
+    safeTx.timestamp = safeTx.timestamp || safeTx.createdAt || new Date().toISOString();
+    safeTx.createdAt = safeTx.createdAt || safeTx.timestamp;
+    safeTx.amount = Number(safeTx.amount || 0);
+    safeTx.finalCredit = Number(safeTx.finalCredit || safeTx.amount || 0);
+    if (!safeTx.username || safeTx.username === "User") {
+      safeTx.username = tx.username || tx.name || tx.uid || "User";
+    }
 
     // Security check: Client cannot arbitrarily mark deposits as "approved"
     if (safeTx.type === "deposit") {
@@ -295,30 +304,51 @@ app.post("/api/record-transaction", async (req, res) => {
 
     saveLocalTransaction(safeTx);
 
-    try {
-      const adminApp = getFirebaseAdmin();
-      if (adminApp) {
-        const db = adminApp.firestore();
-        if (safeTx.type === "deposit") {
-          const depRef = db.collection("deposits").doc(String(docId));
-          const snap = await depRef.get();
-          // If already approved in DB, do not downgrade, otherwise keep as pending
-          if (snap.exists && (snap.data()?.status === "approved" || snap.data()?.credited === true)) {
-            safeTx.status = "approved";
-          } else {
-            safeTx.status = "pending";
+    // Asynchronously sync to Firestore if admin app exists without blocking response
+    (async () => {
+      try {
+        const adminApp = getFirebaseAdmin();
+        if (adminApp) {
+          const db = adminApp.firestore();
+          if (safeTx.type === "deposit") {
+            const depRef = db.collection("deposits").doc(String(docId));
+            await Promise.race([
+              depRef.set(safeTx, { merge: true }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 2500))
+            ]).catch(() => {});
+          } else if (safeTx.type === "withdraw") {
+            await Promise.race([
+              db.collection("withdrawals").doc(String(docId)).set(safeTx, { merge: true }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 2500))
+            ]).catch(() => {});
           }
-          await depRef.set(safeTx, { merge: true });
-        } else if (safeTx.type === "withdraw") {
-          await db.collection("withdrawals").doc(String(docId)).set(safeTx, { merge: true });
+          await Promise.race([
+            db.collection("transactions").doc(String(docId)).set(safeTx, { merge: true }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 2500))
+          ]).catch(() => {});
         }
-        await db.collection("transactions").doc(String(docId)).set(safeTx, { merge: true });
-      }
-    } catch (fbErr: any) {}
+      } catch (fbErr: any) {}
+    })();
 
     return res.json({ success: true, status: safeTx.status });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint to fetch all deposits for Admin Panel fallback
+app.get("/api/admin/all-deposits", async (req, res) => {
+  try {
+    const list = getLocalTransactions();
+    const deposits = list.filter((tx: any) => tx.type === "deposit" || tx.gateway === "propay");
+    deposits.sort((a: any, b: any) => {
+      const ta = new Date(a.timestamp || a.createdAt || 0).getTime();
+      const tb = new Date(b.timestamp || b.createdAt || 0).getTime();
+      return tb - ta;
+    });
+    return res.json({ success: true, deposits });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1111,54 +1141,78 @@ app.all(["/propay_pay.php", "/api/propay-pay"], async (req, res) => {
   }
 });
 
-app.all(["/api/propay-callback", "/callback.php"], async (req, res) => {
+app.all(["/api/propay-callback", "/callback.php", "/callback", "/propay_callback.php"], upload.none(), async (req, res) => {
   try {
-    const received_signature = req.body?.signature || req.query?.signature || "";
-    const order_no = req.body?.order_no || req.query?.order_no || "";
-    const amount = req.body?.amount || req.query?.amount || "";
-    const status = req.body?.status || req.query?.status || "";
-    const api_key = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
+    const received_signature = String(req.body?.signature || req.query?.signature || "").trim().toLowerCase();
+    const order_no = String(req.body?.order_no || req.query?.order_no || "").trim();
+    const raw_amount = req.body?.amount !== undefined ? req.body.amount : (req.query?.amount !== undefined ? req.query.amount : "");
+    const amount = String(raw_amount).trim();
+    const status = String(req.body?.status || req.query?.status || "").trim().toLowerCase();
+    const api_key = (process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc").trim();
 
     if (!received_signature || !order_no || !amount) {
+      console.warn("[ProPay Callback] Missing parameters:", { received_signature, order_no, amount });
       return res.status(400).send("Missing parameters");
     }
 
-    const formatted_amount1 = parseFloat(amount).toString();
-    const expected_signature1 = crypto.createHmac("sha256", api_key)
-                                      .update(String(order_no) + formatted_amount1)
-                                      .digest("hex");
-    const expected_signature2 = crypto.createHmac("sha256", api_key)
-                                      .update(String(order_no) + String(amount))
-                                      .digest("hex");
+    // ProPay v1.1 formula:
+    // $formatted_amount = (float)$amount;
+    // $expected_signature = hash_hmac('sha256', $order_no . $formatted_amount, $api_key);
+    const float_amount = parseFloat(amount);
+    const float_str = float_amount.toString();
+    const expected_sig_float = crypto.createHmac("sha256", api_key)
+                                     .update(order_no + float_str)
+                                     .digest("hex").toLowerCase();
+    const expected_sig_raw = crypto.createHmac("sha256", api_key)
+                                   .update(order_no + amount)
+                                   .digest("hex").toLowerCase();
+    const expected_sig_fixed = crypto.createHmac("sha256", api_key)
+                                     .update(order_no + float_amount.toFixed(2))
+                                     .digest("hex").toLowerCase();
 
-    const isValid = (received_signature === expected_signature1) || (received_signature === expected_signature2);
+    const isValid = (received_signature === expected_sig_float) || 
+                    (received_signature === expected_sig_raw) || 
+                    (received_signature === expected_sig_fixed);
 
     if (isValid) {
       let uid = "";
-      let creditAmount = Number(amount);
+      let creditAmount = float_amount;
       let finalCredit = creditAmount;
 
-      if (typeof order_no === "string") {
-        const parts = order_no.split("-");
-        if (parts.length >= 3) {
-          uid = parts[1];
+      // Extract UID if formatted as ORD-<uid>-<timestamp>
+      if (order_no.startsWith("ORD-")) {
+        const withoutPrefix = order_no.substring(4);
+        const lastHyphen = withoutPrefix.lastIndexOf("-");
+        if (lastHyphen > 0) {
+          uid = withoutPrefix.substring(0, lastHyphen);
+        } else {
+          uid = withoutPrefix;
         }
+      }
+
+      // Check local store for UID & existing details
+      const localList = getLocalTransactions();
+      const existingLocal = localList.find((x: any) => x.order_no === order_no || x.id === order_no);
+      if (existingLocal) {
+        if (!uid && existingLocal.uid) uid = existingLocal.uid;
+        if (existingLocal.finalCredit) finalCredit = Number(existingLocal.finalCredit);
       }
 
       // Always update local store immediately
       saveLocalTransaction({
         id: String(order_no),
         order_no: String(order_no),
+        uid: uid || "",
         status: "approved",
         credited: true,
-        amount: Number(amount),
-        finalCredit: Number(amount),
+        amount: creditAmount,
+        finalCredit: finalCredit,
         type: "deposit",
         gateway: "propay",
         updatedAt: new Date().toISOString()
       });
 
-      // Best-effort Firestore sync with 1.5s timeout
+      // Best-effort Firestore sync with 2.5s timeout
       try {
         const adminApp = getFirebaseAdmin();
         if (adminApp) {
@@ -1167,8 +1221,9 @@ app.all(["/api/propay-callback", "/callback.php"], async (req, res) => {
             const depositRef = db.collection("deposits").doc(String(order_no));
             const depSnap = await depositRef.get().catch(() => null);
             if (depSnap && depSnap.exists) {
-              uid = depSnap.data()?.uid || uid;
-              finalCredit = Number(depSnap.data()?.finalCredit || creditAmount);
+              const dData = depSnap.data();
+              uid = dData?.uid || uid;
+              finalCredit = Number(dData?.finalCredit || creditAmount);
             }
 
             await depositRef.set({
@@ -1179,23 +1234,25 @@ app.all(["/api/propay-callback", "/callback.php"], async (req, res) => {
               gateway: "propay",
               order_no: String(order_no),
               uid: uid || "unknown",
+              approvedAt: new Date().toISOString(),
               updatedAt: new Date().toISOString()
-            }, { merge: true });
+            }, { merge: true }).catch(() => {});
 
             if (uid) {
               const userRef = db.collection("users").doc(uid);
               const userSnap = await userRef.get().catch(() => null);
               if (userSnap && userSnap.exists) {
-                const curBal = Number(userSnap.data()?.balance || 0);
-                const curDep = Number(userSnap.data()?.totalDeposited || 0);
-                const curCount = Number(userDoc?.approvedDepositsCount || 0);
-                await userRef.update({
+                const userData = userSnap.data() || {};
+                const curBal = Number(userData.balance || 0);
+                const curDep = Number(userData.totalDeposited || 0);
+                const curCount = Number(userData.approvedDepositsCount || 0);
+                await userRef.set({
                   balance: (curBal + finalCredit).toFixed(2),
                   totalDeposited: curDep + creditAmount,
                   approvedDepositsCount: curCount + 1,
                   withdrawEnabled: ((curDep + creditAmount) >= 940 && (curCount + 1) >= 2),
                   updatedAt: new Date().toISOString()
-                }).catch(() => {});
+                }, { merge: true }).catch(() => {});
               }
 
               const userHistoryRef = db.collection("users").doc(uid).collection("history").doc(String(order_no));
@@ -1226,12 +1283,14 @@ app.all(["/api/propay-callback", "/callback.php"], async (req, res) => {
 
           await Promise.race([
             syncPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 1500))
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2500))
           ]);
         }
-      } catch (dbErr) {}
+      } catch (dbErr) {
+        console.warn("[ProPay Callback] Firestore update warning:", dbErr);
+      }
 
-      return res.send("Success");
+      return res.status(200).send("Success");
     } else {
       console.warn("[ProPay Callback] Invalid signature:", received_signature);
       return res.status(403).send("Invalid Signature");
