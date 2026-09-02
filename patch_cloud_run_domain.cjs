@@ -23,16 +23,39 @@ jsFiles.forEach(filePath => {
     window.BACKEND_API_BASE = isLocalOrRunApp ? "" : "${BACKEND_URL}";
     
     var origFetch = window.fetch;
-    window.fetch = function(input, init) {
-      if (typeof input === "string") {
-        if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
-          if (window.BACKEND_API_BASE) {
-            input = window.BACKEND_API_BASE + input;
+    if (origFetch) {
+      var customFetch = function(input, init) {
+        if (typeof input === "string") {
+          if (input.startsWith("/api/") || input.startsWith("/gopay_pay.php") || input.startsWith("/pay.php") || input.startsWith("/pay1/")) {
+            if (window.BACKEND_API_BASE) {
+              input = window.BACKEND_API_BASE + input;
+            }
           }
         }
+        return origFetch.call(this, input, init);
+      };
+      try {
+        window.fetch = customFetch;
+      } catch (e) {
+        try {
+          Object.defineProperty(window, "fetch", {
+            value: customFetch,
+            writable: true,
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e2) {
+          try {
+            Object.defineProperty(Window.prototype, "fetch", {
+              value: customFetch,
+              writable: true,
+              configurable: true,
+              enumerable: true
+            });
+          } catch (e3) {}
+        }
       }
-      return origFetch.call(this, input, init);
-    };
+    }
   }
 })();
 `;

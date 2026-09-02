@@ -1,7 +1,75 @@
 <!doctype html>
 <html lang="en">
   <head>
-    
+    <!-- Master Shield: Suppress third-party logger & widget noise -->
+    <script type="text/javascript">
+      (function() {
+        function isFiltered(arg) {
+          if (!arg) return false;
+          var s = "";
+          try {
+            if (typeof arg === "string") s = arg;
+            else if (arg && arg.message) s = arg.message;
+            else if (arg && arg.toString) s = arg.toString();
+            else s = JSON.stringify(arg);
+          } catch(e) { s = String(arg); }
+          return /tawk/i.test(s) || /logger/i.test(s) || /error report sent/i.test(s) || /socket on error/i.test(s) || /transport/i.test(s);
+        }
+
+        function shouldSuppress(args) {
+          try {
+            for (var i = 0; i < args.length; i++) {
+              if (isFiltered(args[i])) return true;
+            }
+          } catch(e) {}
+          return false;
+        }
+
+        var _err = console.error;
+        var _warn = console.warn;
+        var _log = console.log;
+        var _info = console.info;
+        var _debug = console.debug;
+
+        console.error = function() {
+          if (shouldSuppress(arguments)) return;
+          return _err.apply(console, arguments);
+        };
+        console.warn = function() {
+          if (shouldSuppress(arguments)) return;
+          return _warn.apply(console, arguments);
+        };
+        console.log = function() {
+          if (shouldSuppress(arguments)) return;
+          return _log.apply(console, arguments);
+        };
+        console.info = function() {
+          if (shouldSuppress(arguments)) return;
+          return _info.apply(console, arguments);
+        };
+        console.debug = function() {
+          if (shouldSuppress(arguments)) return;
+          return _debug.apply(console, arguments);
+        };
+
+        window.addEventListener("error", function(e) {
+          if (e && (isFiltered(e.message) || isFiltered(e.filename) || isFiltered(e.error))) {
+            if (e.preventDefault) e.preventDefault();
+            if (e.stopPropagation) e.stopPropagation();
+            if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+
+        window.addEventListener("unhandledrejection", function(e) {
+          if (e && (isFiltered(e.reason) || isFiltered(e.message))) {
+            if (e.preventDefault) e.preventDefault();
+            if (e.stopPropagation) e.stopPropagation();
+            if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+          }
+        }, true);
+      })();
+    </script>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
     
     
@@ -76,7 +144,7 @@
             </div>
             <h2 id="verify-title" class="text-xl font-black text-blue-400 mb-3 text-center">পেমেন্ট যাচাই করা হচ্ছে</h2>
             <p id="verify-desc" class="text-slate-300 text-center font-semibold leading-relaxed mb-6 text-sm">
-               অনুগ্রহ করে ৫ সেকেন্ড অপেক্ষা করুন, আপনার ট্রানজ্যাকশন আইডি ও GOPay পেমেন্ট যাচাই করা হচ্ছে...
+               অনুগ্রহ করে ৫ সেকেন্ড অপেক্ষা করুন, আপনার ট্রানজ্যাকশন আইডি ও পেমেন্ট যাচাই করা হচ্ছে...
             </p>
             <button id="verify-action-btn" class="w-full bg-[#006e47] text-white h-12 rounded-xl font-black text-md hover:bg-opacity-90 active:scale-95 transition-all shadow-lg flex items-center justify-center" style="display: none;">
                গেমে ফিরে যান
@@ -271,62 +339,21 @@
   
     
 
-      <!-- Error Shield & Console Filter for Third-party Widgets -->
-    <script type="text/javascript">
-      (function() {
-        function isWidgetNoise(args) {
-          try {
-            for (var i = 0; i < args.length; i++) {
-              var str = typeof args[i] === "string" ? args[i] : (args[i] && args[i].toString ? String(args[i]) : "");
-              if (/tawk/i.test(str) || /Error report sent/i.test(str) || /Logger/i.test(str)) {
-                return true;
-              }
-            }
-          } catch(e) {}
-          return false;
-        }
-
-        var _log = console.log, _warn = console.warn, _err = console.error, _info = console.info, _debug = console.debug;
-        console.log = function() { if (!isWidgetNoise(arguments)) _log.apply(console, arguments); };
-        console.warn = function() { if (!isWidgetNoise(arguments)) _warn.apply(console, arguments); };
-        console.error = function() { if (!isWidgetNoise(arguments)) _err.apply(console, arguments); };
-        console.info = function() { if (!isWidgetNoise(arguments)) _info.apply(console, arguments); };
-        console.debug = function() { if (!isWidgetNoise(arguments)) _debug.apply(console, arguments); };
-
-        window.addEventListener("error", function(e) {
-          if (e && ((e.filename && /tawk/i.test(e.filename)) || (e.message && (/tawk/i.test(e.message) || /Error report sent/i.test(e.message))))) {
-            if (e.preventDefault) e.preventDefault();
-            if (e.stopPropagation) e.stopPropagation();
-            return true;
-          }
-        }, true);
-
-        window.addEventListener("unhandledrejection", function(e) {
-          if (e && e.reason && (/tawk/i.test(String(e.reason)) || /Error report sent/i.test(String(e.reason)))) {
-            if (e.preventDefault) e.preventDefault();
-            if (e.stopPropagation) e.stopPropagation();
-          }
-        }, true);
-      })();
-    </script>
-
-    <!-- High-Speed Preconnect for Tawk.to Live Chat -->
-    <link rel="preconnect" href="https://tawk.to" crossorigin />
-    <link rel="preconnect" href="https://embed.tawk.to" crossorigin />
-    <link rel="preconnect" href="https://static-v.tawk.to" crossorigin />
-    <link rel="preconnect" href="https://va.tawk.to" crossorigin />
-
-    <!-- Style: Keep Tawk widget hidden from main page until user opens chat -->
-    
-
-    
-    
-    <!-- Tawk.to Live Chat & Instant Visitor Tracking -->
+    <!-- Tawk.to Live Chat & Visitor Tracking with Safe Stubs -->
     <script type="text/javascript">
       window.Tawk_API = window.Tawk_API || {};
       window.Tawk_LoadStart = new Date();
 
-      // Get logged-in visitor username & email
+      // Ensure all standard Tawk_API methods exist as safe stubs immediately
+      var _noop = function(){};
+      var _stubs = ['setAttributes', 'addEvent', 'addTags', 'removeTags', 'maximize', 'minimize', 'toggle', 'popup', 'showWidget', 'hideWidget', 'cleanDone', 'endChat', 'getStatus', 'onLoad', 'onChatMaximized', 'onChatMinimized', 'onChatHidden', 'onChatStarted', 'onChatEnded'];
+      for (var i = 0; i < _stubs.length; i++) {
+        if (typeof window.Tawk_API[_stubs[i]] !== 'function') {
+          window.Tawk_API[_stubs[i]] = _noop;
+        }
+      }
+
+      // Get logged-in visitor username & email safely
       function getVisitorData() {
         var u = "Guest";
         var em = "guest@sn777.site";
@@ -354,26 +381,6 @@
         email: vData.email
       };
 
-      window.Tawk_API.onLoad = function() {
-        try {
-          var cur = getVisitorData();
-          if (typeof window.Tawk_API.setAttributes === "function") {
-            window.Tawk_API.setAttributes({
-              name: cur.name,
-              username: cur.name,
-              email: cur.email,
-              site: "Sn777"
-            }, function(){});
-          }
-          if (typeof window.Tawk_API.addEvent === "function") {
-            window.Tawk_API.addEvent("visitor-online", {
-              user: cur.name,
-              site: "Sn777"
-            }, function(){});
-          }
-        } catch(e) {}
-      };
-
       // Realtime updater when user signs up or logs in
       window.updateTawkVisitor = function(data) {
         if (!data) return;
@@ -390,34 +397,41 @@
               phone: data.phone || "",
               balance: data.balance || "0.00",
               site: "Sn777"
-            }, function(){});
+            }, _noop);
           }
           if (typeof window.Tawk_API.addEvent === "function") {
             window.Tawk_API.addEvent("signup-login", {
               user: name,
               email: email,
               site: "Sn777"
-            }, function(){});
+            }, _noop);
           }
         } catch(e) {}
       };
 
-      (function(){
-        var s1 = document.createElement("script"), s0 = document.getElementsByTagName("script")[0];
-        s1.async = true;
-        s1.src = "https://embed.tawk.to/6a00124c06a7a01c3394a833/default";
-        s1.charset = "UTF-8";
-        s1.setAttribute("crossorigin", "*");
-        if (s0 && s0.parentNode) {
-          s0.parentNode.insertBefore(s1, s0);
-        } else {
-          document.head.appendChild(s1);
-        }
+      // Only load remote Tawk widget when running standalone in production (not in iframe/sandbox preview)
+      (function() {
+        try {
+          var isSandboxed = (window.self !== window.top) || 
+                            window.location.hostname.includes("run.app") || 
+                            window.location.hostname.includes("localhost");
+          if (!isSandboxed) {
+            var s1 = document.createElement("script"), s0 = document.getElementsByTagName("script")[0];
+            s1.async = true;
+            s1.src = "https://embed.tawk.to/6a00124c06a7a01c3394a833/default";
+            s1.charset = "UTF-8";
+            s1.setAttribute("crossorigin", "*");
+            if (s0 && s0.parentNode) {
+              s0.parentNode.insertBefore(s1, s0);
+            } else if (document.head) {
+              document.head.appendChild(s1);
+            }
+          }
+        } catch(e) {}
       })();
     </script>
   </head>
   <body>
     <div id="root"></div>
-  
-
-      </div>
+  </body>
+</html>

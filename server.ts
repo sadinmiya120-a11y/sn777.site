@@ -190,7 +190,7 @@ app.post("/api/update-username", async (req, res) => {
 });
 
 
-// --- GOPay Integration ---
+// --- Transaction Storage & Verification ---
 
 const TX_STORE_FILE = path.join(process.cwd(), "data", "transactions_store.json");
 
@@ -339,9 +339,40 @@ app.post("/api/record-transaction", async (req, res) => {
 // Endpoint to fetch all deposits for Admin Panel fallback
 app.get("/api/admin/all-deposits", async (req, res) => {
   try {
-    const list = getLocalTransactions();
-    const deposits = list.filter((tx: any) => tx.type === "deposit" || tx.gateway === "propay");
-    deposits.sort((a: any, b: any) => {
+    const localList = getLocalTransactions().filter((tx: any) => tx.type === "deposit");
+    let firestoreList: any[] = [];
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) {
+        const depSnap = await adminApp.firestore().collection("deposits").limit(200).get().catch(() => ({ docs: [] }));
+        depSnap.docs.forEach((d: any) => {
+          firestoreList.push({
+            id: d.id,
+            order_no: d.id,
+            ...d.data()
+          });
+        });
+      }
+    } catch (e) {}
+
+    const map = new Map<string, any>();
+    for (const item of [...firestoreList, ...localList]) {
+      const orderNo = item.order_no || item.id || item.depositNo || item.serialNo || item.doc_id;
+      if (!orderNo) continue;
+      const key = String(orderNo);
+      const existing = map.get(key) || {};
+      map.set(key, {
+        ...existing,
+        ...item,
+        id: key,
+        order_no: key,
+        orderId: key,
+        depositNo: key,
+        serialNo: key
+      });
+    }
+
+    const deposits = Array.from(map.values()).sort((a: any, b: any) => {
       const ta = new Date(a.timestamp || a.createdAt || 0).getTime();
       const tb = new Date(b.timestamp || b.createdAt || 0).getTime();
       return tb - ta;
@@ -1055,359 +1086,374 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
 
 
 
-// --- ProPay Integration ---
-app.all(["/success.php", "/success"], (req, res) => {
-  const order_no = req.query.order_no || "";
-  res.redirect("/?deposit_success=1&order_no=" + encodeURIComponent(String(order_no)));
-});
 
-app.post("/api/create-payment", async (req, res) => {
-  try {
-    const { uid, amount, method, order_no } = req.body;
-    if (!uid || !amount || !method) return res.status(400).json({ error: "Missing parameters" });
-    const orderId = order_no || ("ORD-" + uid + "-" + Date.now());
-    const my_api_key = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
-    const gateway_url = (method === "nagad")
-      ? "https://checkout.propay.cyou/pay/Nagad.php"
-      : "https://checkout.propay.cyou/pay/Bkash.php";
+// --- ProPay Payment Gateway Integration (v1.1) ---
 
-    const params = new URLSearchParams({
-      api_key: my_api_key,
-      uid: String(uid),
-      amount: Number(amount).toFixed(2),
-      order_no: String(orderId),
-      return_url: "https://www.sn777.site/success.php",
-      pass_through_key: my_api_key,
-      pass_through_callback_url: "https://www.sn777.site/callback.php"
-    });
-    const redirect_url = gateway_url + "?" + params.toString();
-    res.json({ success: true, redirect_url, order_no: orderId });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+const PROPAY_API_KEY = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
+
+function generateCleanOrderId(customOrderNo?: string): string {
+  if (customOrderNo && customOrderNo.trim().length >= 6 && customOrderNo !== "undefined" && customOrderNo !== "null") {
+    return customOrderNo.trim();
   }
-});
+  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // e.g. 20260902
+  const randDigits = Math.floor(100000 + Math.random() * 900000); // 6-digit random number
+  return `ORD-${dateStr}-${randDigits}`;
+}
 
-app.all(["/propay_pay.php", "/api/propay-pay"], async (req, res) => {
+// Initiate ProPay Payment
+app.all(["/propay_pay.php", "/api/propay-pay", "/api/create-payment"], async (req, res) => {
   try {
-    const uid = req.query.uid || "USER123";
-    const amount = req.query.amount || "200";
-    const method = req.query.method === "nagad" ? "nagad" : "bkash";
-    const order_no = req.query.order_no || ("ORD-" + uid + "-" + Date.now());
-    const api_key = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
+    const uid = String(req.query.uid || req.body?.uid || "").trim();
+    const rawAmount = req.query.amount || req.body?.amount || 200;
+    const amount = parseFloat(String(rawAmount)) || 200;
+    const method = String(req.query.method || req.body?.method || "bkash").trim().toLowerCase();
+    
+    // Clean, beautiful order_no format: ORD-YYYYMMDD-XXXXXX
+    const customOrderNo = String(req.query.order_no || req.body?.order_no || "").trim();
+    const order_no = generateCleanOrderId(customOrderNo);
 
-    const gateway_url = (method === "nagad")
-      ? "https://checkout.propay.cyou/pay/Nagad.php"
-      : "https://checkout.propay.cyou/pay/Bkash.php";
+    if (!uid) {
+      return res.status(400).json({ error: "Missing uid", success: false });
+    }
 
-    const params = new URLSearchParams({
-      api_key: api_key,
-      uid: String(uid),
-      amount: Number(amount).toFixed(2),
-      order_no: String(order_no),
-      return_url: "https://www.sn777.site/success.php",
-      pass_through_key: api_key,
-      pass_through_callback_url: "https://www.sn777.site/callback.php"
-    });
+    let username = String(req.query.username || req.body?.username || "").trim();
+    let phone = String(req.query.phone || req.body?.phone || req.query.userPhone || req.body?.userPhone || "").trim();
 
-    const redirect_url = gateway_url + "?" + params.toString();
-
-    // Async record, non-blocking
-    (async () => {
+    // Optionally enrich user profile data for Admin Panel visibility
+    const adminApp = getFirebaseAdmin();
+    if (adminApp) {
       try {
-        const adminApp = getFirebaseAdmin();
-        if (adminApp) {
-          const db = adminApp.firestore();
-          await Promise.race([
-            db.collection("deposits").doc(String(order_no)).set({
-              uid: String(uid),
-              amount: Number(amount),
-              finalCredit: Number(amount),
-              method: String(method),
-              status: "pending",
-              timestamp: new Date().toISOString(),
-              gateway: "propay",
-              order_no: String(order_no)
-            }, { merge: true }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("DB timeout")), 1500))
-          ]);
+        const uSnap = await adminApp.firestore().collection("users").doc(uid).get().catch(() => null);
+        if (uSnap && uSnap.exists) {
+          const uData = uSnap.data() || {};
+          if (!username) username = uData.username || uData.name || uData.displayName || uid;
+          if (!phone) phone = uData.phone || uData.phoneNumber || uData.accountNumber || "";
         }
-      } catch (dbErr) {}
-    })();
+      } catch (e) {}
+    }
 
-    res.redirect(redirect_url);
+    const host = req.get("host") || "www.sn777.site";
+    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+    const origin = `${protocol}://${host}`;
+
+    const gateway_url = (method === "nagad")
+      ? "https://checkout.propay.cyou/pay/Nagad.php"
+      : "https://checkout.propay.cyou/pay/Bkash.php";
+
+    const returnUrl = `${origin}/success.php?order_no=${encodeURIComponent(order_no)}`;
+    const callbackUrl = `${origin}/callback.php`;
+
+    const params = new URLSearchParams({
+      api_key: PROPAY_API_KEY,
+      uid: uid,
+      amount: amount.toFixed(2),
+      order_no: order_no,
+      return_url: returnUrl,
+      pass_through_key: PROPAY_API_KEY,
+      pass_through_callback_url: callbackUrl
+    });
+
+    const redirectUrl = `${gateway_url}?${params.toString()}`;
+
+    // Record pending transaction locally & in Firestore with all order ID aliases for Admin Panel
+    const nowIso = new Date().toISOString();
+    const pendingTx = {
+      id: order_no,
+      order_no: order_no,
+      orderId: order_no,
+      depositNo: order_no,
+      serialNo: order_no,
+      doc_id: order_no,
+      uid: uid,
+      username: username || uid,
+      phone: phone,
+      userPhone: phone,
+      accountNumber: phone,
+      type: "deposit",
+      amount: amount,
+      finalCredit: amount,
+      method: method,
+      status: "pending",
+      gateway: "propay",
+      timestamp: nowIso,
+      createdAt: nowIso,
+      description: `ProPay ${method.toUpperCase()} Deposit (${order_no})`
+    };
+
+    saveLocalTransaction(pendingTx);
+
+    if (adminApp) {
+      try {
+        const db = adminApp.firestore();
+        await db.collection("deposits").doc(order_no).set(pendingTx, { merge: true }).catch(() => {});
+        await db.collection("transactions").doc(order_no).set(pendingTx, { merge: true }).catch(() => {});
+      } catch (dbErr) {}
+    }
+
+    // Return JSON if requested as API, or redirect if form submission / browser GET
+    if (req.headers.accept && req.headers.accept.includes("application/json") && req.method === "POST" && !req.query.redirect) {
+      return res.json({ success: true, redirect_url: redirectUrl, order_no });
+    }
+
+    return res.redirect(redirectUrl);
   } catch (err: any) {
-    console.error("[PROPAY PAY] Error:", err);
-    res.status(500).send("Internal Server Error");
+    console.error("[ProPay Pay Error]:", err);
+    return res.status(500).json({ error: err.message, success: false });
   }
 });
 
-app.all(["/api/propay-callback", "/callback.php", "/callback", "/propay_callback.php"], upload.none(), async (req, res) => {
+// ProPay Webhook Callback Notification (callback.php)
+app.all(["/callback.php", "/api/propay-callback"], async (req, res) => {
   try {
-    const received_signature = String(req.body?.signature || req.query?.signature || "").trim().toLowerCase();
+    const received_signature = String(req.body?.signature || req.query?.signature || "").trim();
     const order_no = String(req.body?.order_no || req.query?.order_no || "").trim();
-    const raw_amount = req.body?.amount !== undefined ? req.body.amount : (req.query?.amount !== undefined ? req.query.amount : "");
-    const amount = String(raw_amount).trim();
+    const raw_amount = req.body?.amount || req.query?.amount || "";
+    const amountStr = String(raw_amount).trim();
     const status = String(req.body?.status || req.query?.status || "").trim().toLowerCase();
-    const api_key = (process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc").trim();
 
-    if (!received_signature || !order_no || !amount) {
-      console.warn("[ProPay Callback] Missing parameters:", { received_signature, order_no, amount });
+    console.log(`[ProPay Callback] Received: order_no=${order_no}, amount=${amountStr}, status=${status}, signature=${received_signature}`);
+
+    if (!received_signature || !order_no || !amountStr) {
+      console.warn("[ProPay Callback] Missing parameters");
       return res.status(400).send("Missing parameters");
     }
 
-    // ProPay v1.1 formula:
-    // $formatted_amount = (float)$amount;
-    // $expected_signature = hash_hmac('sha256', $order_no . $formatted_amount, $api_key);
-    const float_amount = parseFloat(amount);
-    const float_str = float_amount.toString();
-    const expected_sig_float = crypto.createHmac("sha256", api_key)
-                                     .update(order_no + float_str)
-                                     .digest("hex").toLowerCase();
-    const expected_sig_raw = crypto.createHmac("sha256", api_key)
-                                   .update(order_no + amount)
-                                   .digest("hex").toLowerCase();
-    const expected_sig_fixed = crypto.createHmac("sha256", api_key)
-                                     .update(order_no + float_amount.toFixed(2))
-                                     .digest("hex").toLowerCase();
+    // Security Verification: expected_signature = hash_hmac('sha256', order_no + formatted_amount, api_key)
+    const float_amount = parseFloat(amountStr);
+    const formatted_amount_str = float_amount.toString();
+    const expected_sig_float = crypto.createHmac("sha256", PROPAY_API_KEY).update(order_no + formatted_amount_str).digest("hex");
+    const expected_sig_raw = crypto.createHmac("sha256", PROPAY_API_KEY).update(order_no + amountStr).digest("hex");
 
-    const isValid = (received_signature === expected_sig_float) || 
-                    (received_signature === expected_sig_raw) || 
-                    (received_signature === expected_sig_fixed);
+    const isMatch = (received_signature.toLowerCase() === expected_sig_float.toLowerCase()) ||
+                    (received_signature.toLowerCase() === expected_sig_raw.toLowerCase());
 
-    if (isValid) {
-      let uid = "";
-      let creditAmount = float_amount;
-      let finalCredit = creditAmount;
+    if (!isMatch) {
+      console.warn("[ProPay Callback] Invalid signature verification failed.");
+      return res.status(403).send("Invalid Signature");
+    }
 
-      // Extract UID if formatted as ORD-<uid>-<timestamp>
-      if (order_no.startsWith("ORD-")) {
-        const withoutPrefix = order_no.substring(4);
-        const lastHyphen = withoutPrefix.lastIndexOf("-");
-        if (lastHyphen > 0) {
-          uid = withoutPrefix.substring(0, lastHyphen);
-        } else {
-          uid = withoutPrefix;
-        }
-      }
+    // Payment Signature Verified!
+    const paidAmount = parseFloat(amountStr) || 0;
+    const finalCredit = paidAmount;
 
-      // Check local store for UID & existing details
-      const localList = getLocalTransactions();
-      const existingLocal = localList.find((x: any) => x.order_no === order_no || x.id === order_no);
-      if (existingLocal) {
-        if (!uid && existingLocal.uid) uid = existingLocal.uid;
-        if (existingLocal.finalCredit) finalCredit = Number(existingLocal.finalCredit);
-      }
+    // 1. Update Local Transactions Store
+    saveLocalTransaction({
+      id: order_no,
+      order_no: order_no,
+      orderId: order_no,
+      depositNo: order_no,
+      serialNo: order_no,
+      status: "approved",
+      credited: true,
+      amount: paidAmount,
+      finalCredit: finalCredit,
+      gateway: "propay",
+      updatedAt: new Date().toISOString()
+    });
 
-      // Always update local store immediately
-      saveLocalTransaction({
-        id: String(order_no),
-        order_no: String(order_no),
-        uid: uid || "",
-        status: "approved",
-        credited: true,
-        amount: creditAmount,
-        finalCredit: finalCredit,
-        type: "deposit",
-        gateway: "propay",
-        updatedAt: new Date().toISOString()
-      });
-
-      // Best-effort Firestore sync with 2.5s timeout
+    // 2. Sync to Firestore & Update User Balance
+    const adminApp = getFirebaseAdmin();
+    if (adminApp) {
       try {
-        const adminApp = getFirebaseAdmin();
-        if (adminApp) {
-          const db = adminApp.firestore();
-          const syncPromise = (async () => {
-            const depositRef = db.collection("deposits").doc(String(order_no));
-            const depSnap = await depositRef.get().catch(() => null);
-            if (depSnap && depSnap.exists) {
-              const dData = depSnap.data();
-              uid = dData?.uid || uid;
-              finalCredit = Number(dData?.finalCredit || creditAmount);
-            }
+        const db = adminApp.firestore();
+        let uid = "";
 
-            await depositRef.set({
-              status: "approved",
-              credited: true,
-              amount: creditAmount,
-              finalCredit: finalCredit,
-              gateway: "propay",
-              order_no: String(order_no),
-              uid: uid || "unknown",
-              approvedAt: new Date().toISOString(),
+        // Find deposit document to get user ID
+        const depDocRef = db.collection("deposits").doc(order_no);
+        const depSnap = await depDocRef.get().catch(() => null);
+        if (depSnap && depSnap.exists) {
+          uid = depSnap.data()?.uid || "";
+        }
+
+        const approvedPayload = {
+          id: order_no,
+          order_no: order_no,
+          orderId: order_no,
+          depositNo: order_no,
+          serialNo: order_no,
+          status: "approved",
+          credited: true,
+          amount: paidAmount,
+          finalCredit: finalCredit,
+          gateway: "propay",
+          approvedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+
+        await depDocRef.set(approvedPayload, { merge: true }).catch(() => {});
+        await db.collection("transactions").doc(order_no).set(approvedPayload, { merge: true }).catch(() => {});
+
+        if (uid) {
+          const userRef = db.collection("users").doc(uid);
+          const userSnap = await userRef.get().catch(() => null);
+          if (userSnap && userSnap.exists) {
+            const uData = userSnap.data() || {};
+            const curBal = parseFloat(String(uData.balance || "0").replace(/,/g, "")) || 0;
+            const curDep = parseFloat(String(uData.totalDeposited || "0").replace(/,/g, "")) || 0;
+            const curCount = Number(uData.approvedDepositsCount || 0);
+
+            const newBal = (curBal + finalCredit).toFixed(2);
+            const newTotalDep = curDep + paidAmount;
+            const newCount = curCount + 1;
+
+            await userRef.set({
+              balance: newBal,
+              approvedDepositsCount: newCount,
+              totalDeposited: newTotalDep,
+              withdrawEnabled: (newTotalDep >= 940 && newCount >= 2),
               updatedAt: new Date().toISOString()
             }, { merge: true }).catch(() => {});
+          }
 
-            if (uid) {
-              const userRef = db.collection("users").doc(uid);
-              const userSnap = await userRef.get().catch(() => null);
-              if (userSnap && userSnap.exists) {
-                const userData = userSnap.data() || {};
-                const curBal = Number(userData.balance || 0);
-                const curDep = Number(userData.totalDeposited || 0);
-                const curCount = Number(userData.approvedDepositsCount || 0);
-                await userRef.set({
-                  balance: (curBal + finalCredit).toFixed(2),
-                  totalDeposited: curDep + creditAmount,
-                  approvedDepositsCount: curCount + 1,
-                  withdrawEnabled: ((curDep + creditAmount) >= 940 && (curCount + 1) >= 2),
-                  updatedAt: new Date().toISOString()
-                }, { merge: true }).catch(() => {});
-              }
-
-              const userHistoryRef = db.collection("users").doc(uid).collection("history").doc(String(order_no));
-              await userHistoryRef.set({
-                status: "approved",
-                type: "deposit",
-                amount: creditAmount,
-                finalCredit: finalCredit,
-                gateway: "propay",
-                order_no: String(order_no),
-                timestamp: new Date().toISOString(),
-                description: "ProPay ডিপোজিট সফল (" + creditAmount + " টাকা)"
-              }, { merge: true }).catch(() => {});
-            }
-
-            const txRef = db.collection("transactions").doc(String(order_no));
-            await txRef.set({
-              status: "approved",
-              credited: true,
-              amount: creditAmount,
-              finalCredit: finalCredit,
-              type: "deposit",
-              gateway: "propay",
-              order_no: String(order_no),
-              updatedAt: new Date().toISOString()
-            }, { merge: true }).catch(() => {});
-          })();
-
-          await Promise.race([
-            syncPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2500))
-          ]);
+          await db.collection("users").doc(uid).collection("history").doc(order_no).set(approvedPayload, { merge: true }).catch(() => {});
         }
       } catch (dbErr) {
         console.warn("[ProPay Callback] Firestore update warning:", dbErr);
       }
-
-      return res.status(200).send("Success");
-    } else {
-      console.warn("[ProPay Callback] Invalid signature:", received_signature);
-      return res.status(403).send("Invalid Signature");
     }
+
+    console.log(`[ProPay Callback] Deposit ${order_no} successfully verified and approved!`);
+    return res.status(200).send("Success");
   } catch (err: any) {
-    console.error("[PROPAY CALLBACK ERROR]:", err);
+    console.error("[ProPay Callback Error]:", err);
     return res.status(500).send("Internal Server Error");
   }
 });
 
-async function startServer() {
-  const possibleDistPaths = [
-    path.join(process.cwd(), "dist"),
-    path.join(process.cwd(), "dist_backup"),
-    path.join(appDir, "dist"),
-    path.join(appDir, "dist_backup"),
-    appDir
-  ];
+// ProPay Payment Return / Success Page (success.php)
+app.all(["/success.php", "/success"], (req, res) => {
+  const order_no = req.query.order_no || req.body?.order_no || "";
+  return res.redirect(`/?m=1&order_no=${encodeURIComponent(String(order_no))}`);
+});
 
-  for (const p of possibleDistPaths) {
-    if (fs.existsSync(p)) {
-      app.use(express.static(p));
-    }
+async function startServer() {
+  const distPath = path.join(process.cwd(), 'dist');
+  const distBackupPath = path.join(process.cwd(), 'dist_backup');
+
+  // Ensure dist directory has all assets
+  if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, 'index.html'))) {
+    try {
+      fs.mkdirSync(distPath, { recursive: true });
+      if (fs.existsSync(distBackupPath)) {
+        fs.cpSync(distBackupPath, distPath, { recursive: true });
+      }
+    } catch (e) {}
   }
 
-  app.get(["/chat", "/livechat", "/chat.html"], (req, res) => {
-    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    for (const p of possibleDistPaths) {
-      const chatPath = path.join(p, "chat.html");
-      if (fs.existsSync(chatPath)) {
-        return res.sendFile(chatPath);
-      }
-    }
-    const pubChat = path.join(process.cwd(), "public", "chat.html");
-    if (fs.existsSync(pubChat)) {
-      return res.sendFile(pubChat);
-    }
-    res.status(404).send("chat.html not found");
-  });
+  app.use(express.static(distPath));
+  if (fs.existsSync(distBackupPath)) {
+    app.use(express.static(distBackupPath));
+  }
 
-  app.get("*", (req, res) => {
-    if (req.path.startsWith("/api/")) {
-      return res.status(404).json({ error: "API endpoint not found" });
-    }
-    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    res.setHeader("Pragma", "no-cache");
-    res.setHeader("Expires", "0");
-    for (const p of possibleDistPaths) {
-      const indexPath = path.join(p, "index.html");
-      if (fs.existsSync(indexPath)) {
-        return res.sendFile(indexPath);
-      }
-    }
-    res.status(404).send("index.html not found");
-  });
+  // Fallback route for static assets
+  app.get('/assets/:filename', async (req, res, next) => {
+    const filename = req.params.filename;
+    const fileInDist = path.join(distPath, 'assets', filename);
+    const fileInBackup = path.join(distBackupPath, 'assets', filename);
 
-    // Auto-cancel deposits older than 7 minutes (Quota-aware with cooldown & rate-limiting)
-  let quotaCooldownUntil = 0;
-
-  cron.schedule("*/5 * * * *", async () => {
-    if (Date.now() < quotaCooldownUntil) {
-      return;
+    if (fs.existsSync(fileInDist)) {
+      return res.sendFile(fileInDist);
+    }
+    if (fs.existsSync(fileInBackup)) {
+      return res.sendFile(fileInBackup);
     }
 
+    // Proxy fallback to sn777.site if asset isn't local
     try {
-      const adminApp = getFirebaseAdmin();
-      if (!adminApp) return;
-      const db = adminApp.firestore();
-      if (!db) return;
-
-      const sevenMinutesAgo = new Date(Date.now() - 7 * 60 * 1000).toISOString();
-      
-      const pendingDeposits = await db.collection("deposits")
-        .where("status", "==", "pending")
-        .limit(10)
-        .get();
-
-      if (pendingDeposits.empty) return;
-
-      for (const doc of pendingDeposits.docs) {
+      const remoteRes = await fetch(`https://sn777.site/assets/${filename}`);
+      if (remoteRes.ok) {
+        const buf = Buffer.from(await remoteRes.arrayBuffer());
         try {
-          const data = doc.data();
-          let createdDate = data.timestamp;
-          if (createdDate && typeof createdDate.toDate === "function") {
-            createdDate = createdDate.toDate().toISOString();
-          } else if (typeof createdDate !== "string") {
-            continue;
-          }
+          fs.mkdirSync(path.join(distPath, 'assets'), { recursive: true });
+          fs.writeFileSync(fileInDist, buf);
+        } catch (e) {}
+        res.setHeader('Content-Type', remoteRes.headers.get('content-type') || 'application/javascript');
+        return res.send(buf);
+      }
+    } catch (e) {}
+    
+    next();
+  });
 
-          if (createdDate && createdDate < sevenMinutesAgo) {
-            const depositId = doc.id;
-            const uid = data.uid;
+  // SPA fallback
+  app.get('*', (req, res) => {
+    const indexPath = fs.existsSync(path.join(distPath, 'index.html'))
+      ? path.join(distPath, 'index.html')
+      : path.join(distBackupPath, 'index.html');
+    res.sendFile(indexPath);
+  });
 
-            await doc.ref.update({ status: "cancelled", updatedAt: new Date().toISOString() });
+  // Auto-cancel deposits older than 7 minutes (Runs every 3 minutes to optimize quota)
+  cron.schedule('*/3 * * * *', async () => {
+    console.log('[Cron] Running auto-cancel check for pending deposits');
+    const sevenMinutesAgo = new Date(Date.now() - 7 * 60 * 1000).toISOString();
 
-            if (uid) {
-              try {
-                await db.collection("users").doc(uid).collection("history").doc(depositId).update({ status: "cancelled" });
-              } catch (histErr) {}
-            }
-          }
-        } catch (itemErr: any) {
-          const msg = String(itemErr?.message || itemErr);
-          if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("Quota exceeded") || msg.includes("8 RESOURCE_EXHAUSTED")) {
-            throw itemErr;
+    // 1. Process local storage transactions auto-cancel
+    try {
+      const localList = getLocalTransactions();
+      let modified = false;
+      for (const tx of localList) {
+        if (tx.type === "deposit" && tx.status === "pending") {
+          const tIso = tx.timestamp || tx.createdAt || "";
+          if (tIso && tIso < sevenMinutesAgo) {
+            tx.status = "cancelled";
+            tx.updatedAt = new Date().toISOString();
+            modified = true;
           }
         }
       }
-    } catch (error: any) {
-      const errMsg = String(error?.message || error);
-      if (errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("Quota exceeded") || errMsg.includes("8 RESOURCE_EXHAUSTED")) {
-        // Cooldown for 15 minutes to allow quota replenishment
-        quotaCooldownUntil = Date.now() + 15 * 60 * 1000;
-        console.warn(`[Cron] Firestore quota exceeded. Pausing auto-cancel check for 15 minutes until ${new Date(quotaCooldownUntil).toISOString()}`);
-      } else {
-        console.warn("[Cron] Auto-cancel check warning:", errMsg);
+      if (modified) {
+        fs.writeFileSync(TX_STORE_FILE, JSON.stringify(localList, null, 2), "utf8");
       }
+    } catch (localErr) {}
+
+    // 2. Try Firestore auto-cancel with graceful handling for Quota Exceeded / Code 8
+    const adminApp = getFirebaseAdmin();
+    if (!adminApp) return;
+    
+    try {
+        const db = adminApp.firestore();
+        const pendingDeposits = await db.collection('deposits')
+            .where('status', '==', 'pending')
+            .get();
+        
+        for (const doc of pendingDeposits.docs) {
+            const data = doc.data();
+            let createdDate = data.timestamp;
+            if (createdDate && typeof createdDate.toDate === 'function') {
+                createdDate = createdDate.toDate().toISOString();
+            } else if (createdDate && typeof createdDate === 'string') {
+                // Already string, nothing to do
+            } else {
+                continue;
+            }
+            
+            if (createdDate && createdDate < sevenMinutesAgo) {
+                const depositId = doc.id;
+                const uid = data.uid;
+
+                // 1. Update deposits document
+                await doc.ref.update({ status: 'cancelled' }).catch(() => {});
+
+                // 2. Update transactions document
+                try {
+                    await db.collection('transactions').doc(depositId).update({ status: 'cancelled' }).catch(() => {});
+                } catch (txErr: any) {}
+
+                // 3. Update users/{uid}/history/{depositId} document if uid exists
+                if (uid) {
+                    try {
+                        await db.collection('users').doc(uid).collection('history').doc(depositId).update({ status: 'cancelled' }).catch(() => {});
+                    } catch (histErr: any) {}
+                }
+            }
+        }
+    } catch (error: any) {
+        if (error?.code === 8 || error?.message?.includes("RESOURCE_EXHAUSTED") || error?.message?.includes("Quota exceeded")) {
+            console.warn('[Cron] Firestore quota exceeded during auto-cancel check, local transactions auto-cancelled gracefully.');
+        } else {
+            console.error('[Cron] Error running auto-cancel check:', error?.message || error);
+        }
     }
   });
 
