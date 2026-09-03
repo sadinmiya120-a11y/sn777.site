@@ -206,6 +206,16 @@ function getLocalTransactions(): any[] {
 function saveLocalTransaction(tx: any) {
   try {
     const list = getLocalTransactions();
+    // Sanitize any ProPay- prefix
+    if (tx.transactionId && String(tx.transactionId).startsWith("ProPay-")) {
+      tx.transactionId = String(tx.transactionId).replace(/^ProPay-/i, "");
+    }
+    if (tx.order_no && String(tx.order_no).startsWith("ProPay-")) {
+      tx.order_no = String(tx.order_no).replace(/^ProPay-/i, "");
+    }
+    if (tx.id && String(tx.id).startsWith("ProPay-")) {
+      tx.id = String(tx.id).replace(/^ProPay-/i, "");
+    }
     const docKey = tx.id || tx.order_no || tx.depositNo || tx.withdrawNo || (tx.timestamp + "_" + tx.amount);
     const idx = list.findIndex((item: any) => {
       const k = item.id || item.order_no || item.depositNo || item.withdrawNo || (item.timestamp + "_" + item.amount);
@@ -213,14 +223,14 @@ function saveLocalTransaction(tx: any) {
     });
     if (idx >= 0) {
       const existing = list[idx];
-      const isApproved = existing.status === approved || existing.status === success || existing.status === 1 || existing.credited === true ||
-                         tx.status === approved || tx.status === success || tx.status === 1 || tx.credited === true;
-      const isRejected = !isApproved && (existing.status === rejected || existing.status === cancelled || existing.status === failed || existing.status === 2 ||
-                         tx.status === rejected || tx.status === cancelled || tx.status === failed || tx.status === 2);
+      const isApproved = existing.status === "approved" || existing.status === "success" || existing.status === 1 || existing.credited === true ||
+                         tx.status === "approved" || tx.status === "success" || tx.status === 1 || tx.credited === true;
+      const isRejected = !isApproved && (existing.status === "rejected" || existing.status === "cancelled" || existing.status === "failed" || existing.status === 2 ||
+                         tx.status === "rejected" || tx.status === "cancelled" || tx.status === "failed" || tx.status === 2);
       list[idx] = {
         ...existing,
         ...tx,
-        status: isApproved ? approved : (isRejected ? cancelled : (tx.status || existing.status || pending)),
+        status: isApproved ? "approved" : (isRejected ? "cancelled" : (tx.status || existing.status || "pending")),
         credited: isApproved ? true : (tx.credited || existing.credited || false),
         updatedAt: new Date().toISOString()
       };
@@ -281,10 +291,20 @@ app.post("/api/record-transaction", async (req, res) => {
       return res.status(400).json({ error: "Missing tx data or uid" });
     }
 
-    const docId = tx.id || tx.order_no || tx.depositNo || tx.withdrawNo || ("tx_" + Date.now());
     let safeTx = { ...tx };
+    if (safeTx.transactionId) {
+      safeTx.transactionId = String(safeTx.transactionId).replace(/^ProPay-/i, "");
+    }
+    if (safeTx.order_no) {
+      safeTx.order_no = String(safeTx.order_no).replace(/^ProPay-/i, "");
+    }
+    if (safeTx.id) {
+      safeTx.id = String(safeTx.id).replace(/^ProPay-/i, "");
+    }
+    const docId = safeTx.id || safeTx.order_no || safeTx.depositNo || safeTx.withdrawNo || ("tx_" + Date.now());
     safeTx.id = String(docId);
     safeTx.order_no = safeTx.order_no || String(docId);
+    safeTx.transactionId = safeTx.transactionId || safeTx.order_no || String(docId);
     safeTx.timestamp = safeTx.timestamp || safeTx.createdAt || new Date().toISOString();
     safeTx.createdAt = safeTx.createdAt || safeTx.timestamp;
     safeTx.amount = Number(safeTx.amount || 0);
@@ -339,7 +359,7 @@ app.post("/api/record-transaction", async (req, res) => {
 // Endpoint to fetch all deposits for Admin Panel fallback
 app.get("/api/admin/all-deposits", async (req, res) => {
   try {
-    const localList = getLocalTransactions().filter((tx: any) => tx.type === "deposit");
+    const localList = getLocalTransactions().filter((tx: any) => tx.type === "deposit" || (!tx.type && !tx.withdrawNo) || tx.depositNo || tx.gateway || (tx.order_no && !tx.withdrawNo));
     let firestoreList: any[] = [];
     try {
       const adminApp = getFirebaseAdmin();
@@ -359,8 +379,9 @@ app.get("/api/admin/all-deposits", async (req, res) => {
     for (const item of [...firestoreList, ...localList]) {
       const orderNo = item.order_no || item.id || item.depositNo || item.serialNo || item.doc_id;
       if (!orderNo) continue;
-      const key = String(orderNo);
+      const key = String(orderNo).replace(/^ProPay-/i, "");
       const existing = map.get(key) || {};
+      const cleanTxId = String(item.transactionId || existing.transactionId || key).replace(/^ProPay-/i, "");
       map.set(key, {
         ...existing,
         ...item,
@@ -368,7 +389,8 @@ app.get("/api/admin/all-deposits", async (req, res) => {
         order_no: key,
         orderId: key,
         depositNo: key,
-        serialNo: key
+        serialNo: key,
+        transactionId: cleanTxId
       });
     }
 
@@ -450,19 +472,22 @@ app.get("/api/user-transactions", async (req, res) => {
     }
     const map = new Map<string, any>();
     for (const item of [...firestoreList, ...localList]) {
-      const key = String(item.id || item.order_no || item.depositNo || item.withdrawNo || (item.timestamp + "_" + item.amount));
+      const key = String(item.id || item.order_no || item.depositNo || item.withdrawNo || (item.timestamp + "_" + item.amount)).replace(/^ProPay-/i, "");
+      const cleanTxId = String(item.transactionId || item.order_no || key).replace(/^ProPay-/i, "");
       const existing = map.get(key);
       if (!existing) {
-        map.set(key, { ...item });
+        map.set(key, { ...item, id: key, transactionId: cleanTxId });
       } else {
-        const isApproved = existing.status === approved || existing.status === success || existing.status === 1 || existing.credited === true ||
-                           item.status === approved || item.status === success || item.status === 1 || item.credited === true;
-        const isRejected = !isApproved && (existing.status === rejected || existing.status === cancelled || existing.status === failed || existing.status === 2 ||
-                           item.status === rejected || item.status === cancelled || item.status === failed || item.status === 2);
+        const isApproved = existing.status === "approved" || existing.status === "success" || existing.status === 1 || existing.credited === true ||
+                           item.status === "approved" || item.status === "success" || item.status === 1 || item.credited === true;
+        const isRejected = !isApproved && (existing.status === "rejected" || existing.status === "cancelled" || existing.status === "failed" || existing.status === 2 ||
+                           item.status === "rejected" || item.status === "cancelled" || item.status === "failed" || item.status === 2);
         map.set(key, {
           ...existing,
           ...item,
-          status: isApproved ? approved : (isRejected ? cancelled : (item.status || existing.status || pending)),
+          id: key,
+          transactionId: cleanTxId,
+          status: isApproved ? "approved" : (isRejected ? "cancelled" : (item.status || existing.status || "pending")),
           credited: isApproved ? true : (item.credited || existing.credited || false)
         });
       }
@@ -1144,8 +1169,10 @@ app.all(["/propay_pay.php", "/api/propay-pay", "/api/create-payment"], async (re
       ? "https://checkout.propay.cyou/pay/Nagad.php"
       : "https://checkout.propay.cyou/pay/Bkash.php";
 
+    const isRunAppOrLocal = host.includes("run.app") || host.includes("localhost") || host.includes("127.0.0.1");
+    const backendHost = isRunAppOrLocal ? origin : "https://sn777-site-864935185164.us-west1.run.app";
     const returnUrl = `${origin}/success.php?order_no=${encodeURIComponent(order_no)}`;
-    const callbackUrl = `${origin}/callback.php`;
+    const callbackUrl = `${backendHost}/callback.php`;
 
     const params = new URLSearchParams({
       api_key: PROPAY_API_KEY,
@@ -1168,6 +1195,7 @@ app.all(["/propay_pay.php", "/api/propay-pay", "/api/create-payment"], async (re
       depositNo: order_no,
       serialNo: order_no,
       doc_id: order_no,
+      transactionId: order_no,
       uid: uid,
       username: username || uid,
       phone: phone,
