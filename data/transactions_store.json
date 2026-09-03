@@ -14,14 +14,15 @@
     "amount": 200,
     "finalCredit": 200,
     "method": "bkash",
-    "status": "pending",
+    "status": "cancelled",
     "timestamp": "2026-09-03T11:12:20.950Z",
     "createdAt": "2026-09-03T11:12:20.950Z",
     "gateway": "propay",
     "senderNumber": "ProPay Gateway",
     "transactionId": "ORD1788433940950",
     "displayAmount": 200,
-    "description": "ProPay ডিপোজিট 200 টাকা (BKASH)"
+    "description": "ProPay ডিপোজিট 200 টাকা (BKASH)",
+    "updatedAt": "2026-09-03T11:21:00.301Z"
   },
   {
     "id": "ORD999999",

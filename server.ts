@@ -1258,13 +1258,21 @@ app.all(["/callback.php", "/api/propay-callback"], async (req, res) => {
     // Security Verification: expected_signature = hash_hmac('sha256', order_no + formatted_amount, api_key)
     const float_amount = parseFloat(amountStr);
     const formatted_amount_str = float_amount.toString();
-    const expected_sig_float = crypto.createHmac("sha256", PROPAY_API_KEY).update(order_no + formatted_amount_str).digest("hex");
-    const expected_sig_raw = crypto.createHmac("sha256", PROPAY_API_KEY).update(order_no + amountStr).digest("hex");
-    const expected_sig_fixed2 = crypto.createHmac("sha256", PROPAY_API_KEY).update(order_no + float_amount.toFixed(2)).digest("hex");
+    const clean_order_no = order_no.replace(/^ProPay-/i, "");
 
-    const isMatch = (received_signature.toLowerCase() === expected_sig_float.toLowerCase()) ||
-                    (received_signature.toLowerCase() === expected_sig_raw.toLowerCase()) ||
-                    (received_signature.toLowerCase() === expected_sig_fixed2.toLowerCase());
+    const candidates = [
+      order_no + formatted_amount_str,
+      order_no + amountStr,
+      order_no + float_amount.toFixed(2),
+      clean_order_no + formatted_amount_str,
+      clean_order_no + amountStr,
+      clean_order_no + float_amount.toFixed(2)
+    ];
+
+    const isMatch = candidates.some((cand) => {
+      const sig = crypto.createHmac("sha256", PROPAY_API_KEY).update(cand).digest("hex");
+      return sig.toLowerCase() === received_signature.toLowerCase();
+    });
 
     if (!isMatch) {
       console.warn("[ProPay Callback] Invalid signature verification failed for order:", order_no);
