@@ -1091,16 +1091,17 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
 
 const PROPAY_API_KEY = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
 
-function generateCleanOrderId(): string {
-  const date = new Date();
-  const dateStr = date.getFullYear().toString() + 
-                  (date.getMonth() + 1).toString().padStart(2, '0') + 
-                  date.getDate().toString().padStart(2, '0');
-  const timeStr = date.getHours().toString().padStart(2, '0') +
-                  date.getMinutes().toString().padStart(2, '0') +
-                  date.getSeconds().toString().padStart(2, '0');
-  const randDigits = Math.floor(1000 + Math.random() * 9000); // 4-digit random number
-  return `ORD-${dateStr}-${timeStr}-${randDigits}`;
+let lastOrderIdTime = 0;
+function generateCleanOrderId(customOrderNo?: string): string {
+  if (customOrderNo && /^ORD\d+$/.test(customOrderNo.trim())) {
+    return customOrderNo.trim();
+  }
+  let now = Date.now();
+  if (now <= lastOrderIdTime) {
+    now = lastOrderIdTime + 1;
+  }
+  lastOrderIdTime = now;
+  return `ORD${now}`;
 }
 
 // Initiate ProPay Payment
@@ -1111,8 +1112,9 @@ app.all(["/propay_pay.php", "/api/propay-pay", "/api/create-payment"], async (re
     const amount = parseFloat(String(rawAmount)) || 200;
     const method = String(req.query.method || req.body?.method || "bkash").trim().toLowerCase();
     
-    // Clean, beautiful order_no format: ORD-YYYYMMDD-XXXXXX
-    const order_no = generateCleanOrderId();
+    // Clean order_no format: ORD<timestamp> (e.g. ORD1788280782736)
+    const customOrderNo = String(req.query.order_no || req.body?.order_no || "").trim();
+    const order_no = generateCleanOrderId(customOrderNo);
 
     if (!uid) {
       return res.status(400).json({ error: "Missing uid", success: false });
