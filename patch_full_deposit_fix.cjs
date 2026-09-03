@@ -82,7 +82,36 @@ targetFiles.forEach(file => {
     console.log(`[4. Admin Filter] Status filter broadened in ${file}`);
   }
 
-  // 5. Check syntax with esbuild before writing
+  // 5. Fix submit button stuck on "প্রসেসিং..." when returning from payment gateway
+  // Hook up pageshow, focus, visibilitychange to reset Ee (isSubmitting) to false
+  const oldEffectTarget = 'R.useEffect(()=>{(async()=>{const L=await En(We(Ie,"settings","paymentMethods"));L.exists()&&nr(ee=>({...ee,...L.data()}))})()},[]);';
+  const newEffectTarget = 'R.useEffect(()=>{const _rst=()=>{xe(!1);try{window._sn777_dep_submitting=!1}catch(e){}};window._sn777_reset_dep=_rst;window.addEventListener("pageshow",_rst);window.addEventListener("focus",_rst);document.addEventListener("visibilitychange",()=>{document.visibilityState==="visible"&&_rst()});return()=>{window.removeEventListener("pageshow",_rst);window.removeEventListener("focus",_rst)}},[]);' + oldEffectTarget;
+
+  if (code.includes(oldEffectTarget) && !code.includes('window._sn777_reset_dep')) {
+    code = code.replace(oldEffectTarget, newEffectTarget);
+    modified = true;
+    console.log(`[5. Reset Submitting on Return] Added pageshow/visibilitychange listener in ${file}`);
+  }
+
+  // 6. Reset Ee (isSubmitting) in Kr submit handler with 3-second safety timeout instead of locking permanently
+  const oldSubmitLock = 'xe(!0);window._sn777_dep_submitting=!0;setTimeout(()=>{window._sn777_dep_submitting=!1},10000);';
+  const newSubmitLock = 'xe(!0);window._sn777_dep_submitting=!0;setTimeout(()=>{try{window._sn777_dep_submitting=!1;xe(!1)}catch(e){}},3000);';
+  if (code.includes(oldSubmitLock)) {
+    code = code.replaceAll(oldSubmitLock, newSubmitLock);
+    modified = true;
+    console.log(`[6. Submit Timeout] Replaced 10s permanent lock with 3s auto-reset in ${file}`);
+  }
+
+  // 7. Reset deposit submitting when switching tabs or clicking deposit
+  const oldMi = 'Mi=async E=>{H("funds"),O("deposit")};';
+  const newMi = 'Mi=async E=>{try{window._sn777_reset_dep&&window._sn777_reset_dep()}catch(e){}H("funds"),O("deposit")};';
+  if (code.includes(oldMi)) {
+    code = code.replaceAll(oldMi, newMi);
+    modified = true;
+    console.log(`[7. Mi Tab Switch Reset] Reset submitting on entering deposit tab in ${file}`);
+  }
+
+  // 8. Check syntax with esbuild before writing
   try {
     esbuild.transformSync(code, { loader: "js" });
     fs.writeFileSync(file, code, "utf8");
