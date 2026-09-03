@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "mkdir -p dist && cp -r dist_backup/* dist/ && node patch_clean_order_id.cjs && npx esbuild server.ts --bundle --platform=node --target=node20 --format=cjs --packages=external --outfile=dist/server.cjs",
+    "build": "mkdir -p dist && cp -r dist_backup/* dist/ && node patch_clean_order_id.cjs && node patch_remove_top_right_icons.cjs && npx esbuild server.ts --bundle --platform=node --target=node20 --format=cjs --packages=external --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "lint": "echo 'No linting needed'"
   },

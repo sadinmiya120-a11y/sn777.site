@@ -661,7 +661,184 @@ app.post("/api/update-auth", async (req, res) => {
   }
 });
 
-// Debug Users Endpoint
+
+// Server-side Telegram Proxy Endpoint for Live Chat
+app.post("/api/send-telegram", express.json({limit: "10mb"}), async (req, res) => {
+  try {
+    const { name, userId, balance, deposit, message } = req.body;
+    const SN_BOT_TOKEN = "8877094989:AAGh9VBrp8E4gAJLsU4Ctj0r6-L0DLNOjbI";
+    const SN_GROUP_ID = "-1003806717205";
+
+    const payloadText = 
+      "📩 New Live Message\n" +
+      "🌐 Site: Sn777.site\n" +
+      "👤 Name: " + (name || "User") + "\n" +
+      "🆔 User ID: " + (userId || "Guest") + "\n" +
+      "💰 Balance: " + (balance || "৳0.00") + "\n" +
+      "💳 Total Deposit: " + (deposit || "৳0.00") + "\n" +
+      "----------------------------------\n" +
+      "💬 Message: " + (message || "").trim();
+
+    const tgUrl = `https://api.telegram.org/bot${SN_BOT_TOKEN}/sendMessage`;
+    const response = await fetch(tgUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: SN_GROUP_ID,
+        text: payloadText
+      })
+    });
+
+    const data = await response.json();
+    if (data.ok) {
+      return res.json({ success: true });
+    } else {
+      return res.status(400).json({ success: false, error: data.description || "Telegram API error" });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
+// Lookup User Endpoint for Live Chat and Verification
+app.get("/api/lookup-user", async (req, res) => {
+  try {
+    const adminApp = getFirebaseAdmin();
+    if (!adminApp) return res.status(503).json({ error: "Database not available" });
+    const rawQuery = String(req.query.q || req.query.username || req.query.uid || req.query.phone || "").trim();
+    if (!rawQuery) return res.status(400).json({ error: "Missing query" });
+
+    const db = adminApp.firestore();
+    const auth = adminApp.auth();
+    let userData: any = null;
+    let userUid: string = "";
+
+    // 1. Try direct doc(uid) in Firestore
+    try {
+      const docSnap = await db.collection("users").doc(rawQuery).get();
+      if (docSnap.exists) {
+        userData = docSnap.data();
+        userUid = docSnap.id;
+      }
+    } catch (e) {}
+
+    // 2. Try by Auth Email / getUserByEmail
+    if (!userData) {
+      const candidateEmails = [
+        rawQuery.includes("@") ? rawQuery : `${rawQuery.toLowerCase().replace(/\s+/g, '')}@sn777.com`,
+        `m${rawQuery.toLowerCase().replace(/\s+/g, '')}@sn777.com`,
+        `md${rawQuery.toLowerCase().replace(/\s+/g, '')}@sn777.com`,
+        `${rawQuery.toLowerCase().replace(/[^a-z0-9]/g, '')}@sn777.com`
+      ];
+
+      for (const email of candidateEmails) {
+        try {
+          const authUser = await auth.getUserByEmail(email);
+          if (authUser) {
+            userUid = authUser.uid;
+            try {
+              const docSnap = await db.collection("users").doc(authUser.uid).get();
+              if (docSnap.exists) {
+                userData = docSnap.data();
+              }
+            } catch (errDoc) {}
+            if (!userData) {
+              userData = {
+                username: authUser.email ? authUser.email.split("@")[0] : rawQuery,
+                email: authUser.email,
+                name: authUser.displayName || rawQuery,
+                phone: authUser.phoneNumber || "",
+                balance: "0.00",
+                totalDeposited: 0
+              };
+            }
+            break;
+          }
+        } catch (e) {}
+      }
+    }
+
+    // 3. Try by username in Firestore where query
+    if (!userData) {
+      try {
+        const snap = await db.collection("users").where("username", "==", rawQuery).limit(1).get();
+        if (!snap.empty) {
+          userData = snap.docs[0].data();
+          userUid = snap.docs[0].id;
+        }
+      } catch (e) {}
+    }
+
+    // 4. Try by username lowercase/trimmed in Firestore
+    if (!userData) {
+      try {
+        const snap = await db.collection("users").where("username", "==", rawQuery.toLowerCase()).limit(1).get();
+        if (!snap.empty) {
+          userData = snap.docs[0].data();
+          userUid = snap.docs[0].id;
+        }
+      } catch (e) {}
+    }
+
+    // 5. Try Auth listUsers fuzzy search if still not found
+    if (!userData) {
+      try {
+        const list = await auth.listUsers(1000);
+        const cleanQ = rawQuery.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const matched = list.users.find(u => {
+          const email = (u.email || '').toLowerCase();
+          const cleanEmail = email.split('@')[0];
+          return cleanEmail === cleanQ || cleanEmail.includes(cleanQ) || cleanQ.includes(cleanEmail);
+        });
+        if (matched) {
+          userUid = matched.uid;
+          try {
+            const docSnap = await db.collection("users").doc(matched.uid).get();
+            if (docSnap.exists) {
+              userData = docSnap.data();
+            }
+          } catch (e) {}
+          if (!userData) {
+            userData = {
+              username: matched.email ? matched.email.split("@")[0] : rawQuery,
+              email: matched.email,
+              name: matched.displayName || matched.email?.split("@")[0] || rawQuery,
+              balance: "0.00",
+              totalDeposited: 0
+            };
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!userData) {
+      return res.json({ success: false, error: "User not found" });
+    }
+
+    const numBal = parseFloat(String(userData.balance || "0").replace(/,/g, "")) || 0;
+    const numDep = parseFloat(String(userData.totalDeposited || "0").replace(/,/g, "")) || 0;
+
+    return res.json({
+      success: true,
+      user: {
+        uid: userUid,
+        username: userData.username || rawQuery,
+        name: userData.name || userData.username || rawQuery,
+        phone: userData.phone || "",
+        email: userData.email || "",
+        balance: "৳" + numBal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+        rawBalance: numBal,
+        deposit: "৳" + numDep.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+        rawDeposit: numDep,
+        role: userData.role || "user"
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/debug-users", async (req, res) => {
   try {
     const adminApp = getFirebaseAdmin();
@@ -709,11 +886,9 @@ app.get("/api/debug-project", (req, res) => {
 });
 
 
-// Full-Screen Embedded Chat Route to support prefilling visitor profile dynamically
+// Live chat route - redirects to Telegram support
 app.get("/chat", (req, res) => {
-  const name = (req.query.name || "Guest").toString();
-  const email = (req.query.email || `${name.toLowerCase()}@sn777.site`).toString();
-  res.redirect(`/chat.html?name=${encodeURIComponent(name)}&email=${encodeURIComponent(email)}`);
+  res.redirect("https://t.me/sn777top");
 });
 
 // Simple keep-alive log every 15 minutes
@@ -918,8 +1093,24 @@ app.post("/api/admin/approve-deposit", async (req, res) => {
           }
         }
 
-        if (depData && !uid) {
-          uid = depData.uid;
+        if (depData) {
+          if (depData.status === "approved" || depData.credited === true) {
+             return res.status(400).json({ success: false, error: "এই ট্রানজ্যাকশনটি ইতিমধ্যেই অ্যাপ্রুভ করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে! একই ট্রানজ্যাকশন দুইবার অ্যাপ্রুভ করা সম্ভব নয়।" });
+          }
+          if (depData.status === "rejected" || depData.cancelled === true) {
+             return res.status(400).json({ success: false, error: "এই ট্রানজ্যাকশনটি বাতিল (রিজেক্ট) করা হয়েছে। রিজেক্ট হওয়া ট্রানজ্যাকশন অ্যাপ্রুভ করা সম্ভব নয়।" });
+          }
+          if (!uid) uid = depData.uid;
+        }
+
+        // Also check if any other deposit has the same transactionId and is already approved
+        let trxIdToCheck = depData?.transactionId || req.body?.transactionId || "";
+        trxIdToCheck = String(trxIdToCheck).trim();
+        if (trxIdToCheck && trxIdToCheck !== cleanOrderNo && !trxIdToCheck.startsWith("ORD")) {
+           const dupSnap = await db.collection("deposits").where("transactionId", "==", trxIdToCheck).where("status", "==", "approved").limit(1).get().catch(() => ({ empty: true, docs: [] }));
+           if (!dupSnap.empty) {
+              return res.status(400).json({ success: false, error: "এই ট্রানজ্যাকশন আইডিটি (" + trxIdToCheck + ") অন্য একটি ডিপোজিটে ইতিমধ্যেই অ্যাপ্রুভ করা হয়েছে! একই আইডি বারবার ব্যবহার করা অবৈধ।" });
+           }
         }
 
         // If UID still not found, try username lookup
@@ -1170,7 +1361,7 @@ app.all(["/propay_pay.php", "/api/propay-pay", "/api/create-payment"], async (re
       : "https://checkout.propay.cyou/pay/Bkash.php";
 
     const isRunAppOrLocal = host.includes("run.app") || host.includes("localhost") || host.includes("127.0.0.1");
-    const backendHost = isRunAppOrLocal ? origin : "https://sn777-site-864935185164.us-west1.run.app";
+    const backendHost = "https://sn777.site";
     const returnUrl = `${origin}/success.php?order_no=${encodeURIComponent(order_no)}`;
     const callbackUrl = `${backendHost}/callback.php`;
 

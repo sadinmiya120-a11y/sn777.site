@@ -28,7 +28,7 @@ targetFiles.forEach(file => {
   // 2. Fix ProPay pass_through_callback_url: must point to Cloud Run backend
   // because Cloudflare on sn777.site returns 405 Method Not Allowed on POST
   const oldCb1 = 'pass_through_callback_url:_curOrigin+"/callback.php"';
-  const newCb1 = `pass_through_callback_url:"${CLOUD_RUN_BACKEND}/callback.php"`;
+  const newCb1 = `pass_through_callback_url:"https://sn777.site/callback.php"`;
   if (code.includes(oldCb1)) {
     code = code.replaceAll(oldCb1, newCb1);
     modified = true;
