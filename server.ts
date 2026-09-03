@@ -1222,18 +1222,33 @@ app.all(["/callback.php", "/api/propay-callback"], async (req, res) => {
       return res.status(400).send("Missing parameters");
     }
 
+    if (status && status !== "success") {
+      console.warn(`[ProPay Callback] Status is not success (${status}) for order: ${order_no}`);
+      return res.status(200).send("Ignored non-success status");
+    }
+
     // Security Verification: expected_signature = hash_hmac('sha256', order_no + formatted_amount, api_key)
     const float_amount = parseFloat(amountStr);
     const formatted_amount_str = float_amount.toString();
     const expected_sig_float = crypto.createHmac("sha256", PROPAY_API_KEY).update(order_no + formatted_amount_str).digest("hex");
     const expected_sig_raw = crypto.createHmac("sha256", PROPAY_API_KEY).update(order_no + amountStr).digest("hex");
+    const expected_sig_fixed2 = crypto.createHmac("sha256", PROPAY_API_KEY).update(order_no + float_amount.toFixed(2)).digest("hex");
 
     const isMatch = (received_signature.toLowerCase() === expected_sig_float.toLowerCase()) ||
-                    (received_signature.toLowerCase() === expected_sig_raw.toLowerCase());
+                    (received_signature.toLowerCase() === expected_sig_raw.toLowerCase()) ||
+                    (received_signature.toLowerCase() === expected_sig_fixed2.toLowerCase());
 
     if (!isMatch) {
-      console.warn("[ProPay Callback] Invalid signature verification failed.");
+      console.warn("[ProPay Callback] Invalid signature verification failed for order:", order_no);
       return res.status(403).send("Invalid Signature");
+    }
+
+    // Check if order was already approved & credited to prevent double-crediting
+    const localList = getLocalTransactions();
+    const existingLocalTx = localList.find((item: any) => item.id === order_no || item.order_no === order_no);
+    if (existingLocalTx && existingLocalTx.status === "approved" && existingLocalTx.credited) {
+      console.log(`[ProPay Callback] Order ${order_no} already approved and credited. Idempotent return.`);
+      return res.status(200).send("Success");
     }
 
     // Payment Signature Verified!
@@ -1260,13 +1275,27 @@ app.all(["/callback.php", "/api/propay-callback"], async (req, res) => {
     if (adminApp) {
       try {
         const db = adminApp.firestore();
-        let uid = "";
+        let uid = existingLocalTx?.uid || "";
 
-        // Find deposit document to get user ID
+        // Find deposit document to get user ID if not found locally
         const depDocRef = db.collection("deposits").doc(order_no);
         const depSnap = await depDocRef.get().catch(() => null);
         if (depSnap && depSnap.exists) {
-          uid = depSnap.data()?.uid || "";
+          const depData = depSnap.data() || {};
+          if (depData.credited === true) {
+            console.log(`[ProPay Callback] Order ${order_no} already credited in Firestore. Idempotent return.`);
+            return res.status(200).send("Success");
+          }
+          if (!uid) {
+            uid = depData.uid || "";
+          }
+        }
+
+        if (!uid) {
+          const txSnap = await db.collection("transactions").doc(order_no).get().catch(() => null);
+          if (txSnap && txSnap.exists) {
+            uid = txSnap.data()?.uid || "";
+          }
         }
 
         const approvedPayload = {
