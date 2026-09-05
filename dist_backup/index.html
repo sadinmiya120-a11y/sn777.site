@@ -162,8 +162,6 @@
         
         let timeLeft = 5;
         let isVerified = false;
-        let isRejected = false;
-        let rejectReason = '';
         let verificationChecked = false;
 
         // Function to query backend for verification
@@ -177,10 +175,6 @@
             const data = await response.json();
             if (data.success) {
               isVerified = true;
-            } else if (data.status === "failed" || data.status === "rejected" || data.status === "cancelled") {
-              isRejected = true;
-              rejectReason = data.error || "ভুল বা ফেক ট্রানজ্যাকশন আইডি! ডিপোজিট বাতিল করা হয়েছে।";
-            }
               // Update local React state for user balance
               if (setUserState && data.finalCredit) {
                 setUserState(prev => {
@@ -235,19 +229,6 @@
                 <div class="w-20 h-20 bg-green-500/10 rounded-full flex items-center justify-center text-green-500 text-5xl" style="border-radius: 50%;">✓</div>
               `;
             }
-          } else if (isRejected) {
-            // Show cancelled / fake transaction state
-            titleEl.className = "text-xl font-black text-red-500 mb-3 text-center";
-            titleEl.textContent = "ডিপোজিট বাতিল হয়েছে!";
-            descEl.textContent = rejectReason || "ভুল বা ফেক ট্রানজ্যাকশন আইডি প্রদান করায় ডিপোজিটটি বাতিল (Cancelled) করা হয়েছে। কোনো টাকা যোগ হয়নি।";
-            
-            const iconParent = countdownNumEl.parentNode;
-            if (iconParent) {
-              iconParent.innerHTML = `
-                <div class="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center text-red-500 text-5xl" style="border-radius: 50%;">✕</div>
-              `;
-            }
-            btnEl.className = "w-full bg-red-600 text-white h-12 rounded-xl font-black text-md hover:bg-opacity-90 active:scale-95 transition-all shadow-lg flex items-center justify-center";
           } else {
             // Show pending state
             titleEl.className = "text-xl font-black text-yellow-500 mb-3 text-center";
