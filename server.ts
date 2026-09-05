@@ -484,18 +484,43 @@ app.get("/api/user-transactions", async (req, res) => {
   try {
     const uid = String(req.query.uid || "").trim();
     if (!uid) return res.status(400).json({ error: "Missing uid" });
-    const localList = getLocalTransactions().filter((t: any) => t.uid === uid || (t.username && t.username === uid));
+    const username = String(req.query.username || "").trim();
+    const orderIdsParam = String(req.query.order_ids || "").trim();
+
+    const localList = getLocalTransactions().filter((t: any) => 
+      t.uid === uid || (t.username && (t.username === uid || (username && t.username === username)))
+    );
     let firestoreList: any[] = [];
     try {
       const adminApp = getFirebaseAdmin();
       if (adminApp) {
         const db = adminApp.firestore();
-        const [txSnap, wthSnap, depSnap, histSnap] = await Promise.all([
+        const [txSnap, wthSnap, depSnap, histSnap, recentDepSnap, recentTxSnap, recentWthSnap] = await Promise.all([
           db.collection("transactions").where("uid", "==", uid).limit(100).get().catch(() => ({ docs: [] })),
           db.collection("withdrawals").where("uid", "==", uid).limit(100).get().catch(() => ({ docs: [] })),
           db.collection("deposits").where("uid", "==", uid).limit(100).get().catch(() => ({ docs: [] })),
-          db.collection("users").doc(uid).collection("history").limit(100).get().catch(() => ({ docs: [] })),
+          db.collection("users").doc(uid).collection("history").orderBy("timestamp", "desc").limit(100).get().catch(() => ({ docs: [] })),
+          db.collection("deposits").orderBy("timestamp", "desc").limit(250).get().catch(() => ({ docs: [] })),
+          db.collection("transactions").orderBy("timestamp", "desc").limit(250).get().catch(() => ({ docs: [] })),
+          db.collection("withdrawals").orderBy("timestamp", "desc").limit(250).get().catch(() => ({ docs: [] })),
         ]);
+
+        // Specific order IDs passed by client from localStorage (e.g. pending ones)
+        if (orderIdsParam) {
+          const ids = orderIdsParam.split(",").map((s: string) => s.trim().replace(/^ProPay-/i, "")).filter(Boolean);
+          const docPromises: Promise<any>[] = [];
+          for (const rawId of ids.slice(0, 30)) {
+            docPromises.push(db.collection("deposits").doc(rawId).get().catch(() => null));
+            docPromises.push(db.collection("transactions").doc(rawId).get().catch(() => null));
+            docPromises.push(db.collection("users").doc(uid).collection("history").doc(rawId).get().catch(() => null));
+          }
+          const docSnaps = await Promise.all(docPromises);
+          for (const ds of docSnaps) {
+            if (ds && ds.exists) {
+              firestoreList.push({ id: ds.id, ...ds.data() });
+            }
+          }
+        }
 
         txSnap.docs.forEach((d: any) => firestoreList.push({ id: d.id, ...d.data() }));
         wthSnap.docs.forEach((d: any) => {
@@ -540,6 +565,26 @@ app.get("/api/user-transactions", async (req, res) => {
             ...data
           });
         });
+
+        // Add recent global docs that match this user's uid or username
+        for (const d of recentDepSnap.docs) {
+          const data = d.data();
+          if (data && (data.uid === uid || (username && data.username === username))) {
+            firestoreList.push({ id: d.id, ...data });
+          }
+        }
+        for (const d of recentTxSnap.docs) {
+          const data = d.data();
+          if (data && (data.uid === uid || (username && data.username === username))) {
+            firestoreList.push({ id: d.id, ...data });
+          }
+        }
+        for (const d of recentWthSnap.docs) {
+          const data = d.data();
+          if (data && (data.uid === uid || (username && data.username === username))) {
+            firestoreList.push({ id: d.id, ...data });
+          }
+        }
       }
     } catch (fbErr: any) {
       console.warn("Error reading from firestore collections:", fbErr);
@@ -550,7 +595,7 @@ app.get("/api/user-transactions", async (req, res) => {
       const cleanTxId = String(item.transactionId || item.order_no || key).replace(/^ProPay-/i, "");
       const existing = map.get(key);
       if (!existing) {
-        map.set(key, { ...item, id: key, transactionId: cleanTxId });
+        map.set(key, { ...item, id: key, order_no: item.order_no ? String(item.order_no).replace(/^ProPay-/i, "") : key, transactionId: cleanTxId });
       } else {
         const isApproved = existing.status === "approved" || existing.status === "success" || existing.status === 1 || existing.credited === true ||
                            item.status === "approved" || item.status === "success" || item.status === 1 || item.credited === true;
@@ -560,6 +605,7 @@ app.get("/api/user-transactions", async (req, res) => {
           ...existing,
           ...item,
           id: key,
+          order_no: String(item.order_no || existing.order_no || key).replace(/^ProPay-/i, ""),
           transactionId: cleanTxId,
           status: isApproved ? "approved" : (isRejected ? "cancelled" : (item.status || existing.status || "pending")),
           credited: isApproved ? true : (item.credited || existing.credited || false)
