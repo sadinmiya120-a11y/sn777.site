@@ -357,6 +357,54 @@ app.post("/api/record-transaction", async (req, res) => {
 });
 
 // Endpoint to fetch all deposits for Admin Panel fallback
+
+// Endpoint to fetch all withdrawals for Admin Panel fallback
+app.get("/api/admin/all-withdrawals", async (req, res) => {
+  try {
+    const localList = getLocalTransactions().filter((tx: any) => tx.type === "withdraw" || tx.withdrawNo || (tx.order_no && String(tx.order_no).startsWith("WTH")));
+    let firestoreList: any[] = [];
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) {
+        const wthSnap = await adminApp.firestore().collection("withdrawals").limit(200).get().catch(() => ({ docs: [] }));
+        wthSnap.docs.forEach((d: any) => {
+          firestoreList.push({
+            id: d.id,
+            withdrawNo: d.id,
+            ...d.data()
+          });
+        });
+      }
+    } catch (fbErr: any) {}
+
+    const map = new Map<string, any>();
+    for (const item of [...firestoreList, ...localList]) {
+      const key = String(item.id || item.withdrawNo || item.order_no).replace(/^ProPay-/i, "");
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, { ...item, id: key });
+      } else {
+        const isApproved = existing.status === "approved" || existing.status === "success" || existing.status === 1 || item.status === "approved" || item.status === "success" || item.status === 1;
+        const isRejected = !isApproved && (existing.status === "rejected" || existing.status === "cancelled" || existing.status === 2 || item.status === "rejected" || item.status === "cancelled" || item.status === 2);
+        map.set(key, {
+          ...existing,
+          ...item,
+          id: key,
+          status: isApproved ? "approved" : (isRejected ? "cancelled" : (item.status || existing.status || "pending"))
+        });
+      }
+    }
+    const merged = Array.from(map.values()).sort((a, b) => {
+      const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
+      const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
+      return timeB - timeA;
+    });
+    return res.json({ withdrawals: merged });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/admin/all-deposits", async (req, res) => {
   try {
     const localList = getLocalTransactions().filter((tx: any) => tx.type === "deposit" || (!tx.type && !tx.withdrawNo) || tx.depositNo || tx.gateway || (tx.order_no && !tx.withdrawNo));
@@ -1230,7 +1278,10 @@ app.post("/api/admin/reject-deposit", async (req, res) => {
           status: "rejected",
           cancelled: true,
           rejectReason: reason || "ভুল বা ফেক ট্রানজ্যাকশন আইডি",
-          updatedAt: new Date().toISOString()
+          updatedAt: new Date().toISOString(),
+          ...(uid && { uid }),
+          
+          ...(doc_id && { doc_id })
         };
         if (depDoc && depDoc.ref) {
           await depDoc.ref.set(rejectPayload, { merge: true }).catch(() => {});
