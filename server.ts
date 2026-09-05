@@ -339,9 +339,32 @@ app.post("/api/record-transaction", async (req, res) => {
     safeTx.createdAt = safeTx.createdAt || safeTx.timestamp;
     safeTx.amount = Number(safeTx.amount || 0);
     safeTx.finalCredit = Number(safeTx.finalCredit || safeTx.amount || 0);
-    if (!safeTx.username || safeTx.username === "User") {
+    if (!safeTx.username || safeTx.username === "User" || !safeTx.phone) {
       safeTx.username = tx.username || tx.name || tx.uid || "User";
+      safeTx.phone = tx.phone || tx.userPhone || tx.phoneNumber || safeTx.phone || "";
     }
+
+    // Attempt to enrich user details from Firestore if available
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp && (!safeTx.phone || safeTx.username === "User" || safeTx.username === safeTx.uid)) {
+        const uDoc = await adminApp.firestore().collection("users").doc(String(safeTx.uid)).get().catch(() => null);
+        if (uDoc && uDoc.exists) {
+          const uData = uDoc.data();
+          if (uData) {
+            if (safeTx.username === "User" || safeTx.username === safeTx.uid) {
+              safeTx.username = uData.username || uData.name || uData.displayName || safeTx.username;
+            }
+            if (!safeTx.phone) {
+              safeTx.phone = uData.phone || uData.phoneNumber || uData.accountNumber || "";
+            }
+            if (!safeTx.userPhone) {
+              safeTx.userPhone = safeTx.phone;
+            }
+          }
+        }
+      }
+    } catch (e) {}
 
     // Security check: Client cannot arbitrarily mark deposits as "approved"
     if (safeTx.type === "deposit") {
@@ -1155,7 +1178,67 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
       });
     }
 
-    return res.json({ success: true, message: "ট্রানজ্যাকশন আইডি বৈধ এবং গ্রহণ করা হয়েছে।" });
+    const cleanOrderNo = String(order_no || ("ORD" + Date.now())).trim().replace(/^ProPay-/i, "");
+    let userPhone = req.body?.phone || req.body?.senderNumber || "";
+    let userName = req.body?.username || "User";
+
+    if (db && uid && (!userName || userName === "User" || !userPhone)) {
+      try {
+        const uDoc = await db.collection("users").doc(uid).get().catch(() => null);
+        if (uDoc && uDoc.exists) {
+          const uData = uDoc.data();
+          if (!userName || userName === "User") userName = uData?.username || uData?.name || "User";
+          if (!userPhone) userPhone = uData?.phone || uData?.phoneNumber || "";
+        }
+      } catch (e) {}
+    }
+
+    const numAmount = Number(amount) || 0;
+    const numFinal = Number(req.body?.finalCredit || amount || 0);
+
+    const manualDepositRecord = {
+      id: cleanOrderNo,
+      order_no: cleanOrderNo,
+      orderId: cleanOrderNo,
+      depositNo: cleanOrderNo,
+      serialNo: cleanOrderNo,
+      uid: uid || "",
+      username: userName,
+      phone: userPhone,
+      userPhone: userPhone,
+      senderNumber: req.body?.senderNumber || userPhone,
+      transactionId: cleanTxId,
+      amount: numAmount,
+      finalCredit: numFinal,
+      method: cleanMethod || "bkash",
+      status: "pending",
+      type: "deposit",
+      gateway: "manual",
+      description: `ম্যানুয়াল ডিপোজিট ${numAmount} টাকা (${(cleanMethod || "bkash").toUpperCase()}) - TrxID: ${cleanTxId}`,
+      timestamp: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    saveLocalTransaction(manualDepositRecord);
+
+    if (db) {
+      try {
+        await db.collection("deposits").doc(cleanOrderNo).set(manualDepositRecord, { merge: true }).catch(() => {});
+        await db.collection("transactions").doc(cleanOrderNo).set(manualDepositRecord, { merge: true }).catch(() => {});
+        if (uid) {
+          await db.collection("users").doc(uid).collection("history").doc(cleanOrderNo).set(manualDepositRecord, { merge: true }).catch(() => {});
+        }
+      } catch (e) {}
+    }
+
+    console.log("[Manual Deposit Recorded]:", cleanOrderNo, "by", userName, "Amount:", numAmount, "TrxID:", cleanTxId);
+
+    return res.json({ 
+      success: true, 
+      message: "ট্রানজ্যাকশন আইডি বৈধ এবং ডিপোজিট রিকোয়েস্ট সফলভাবে জমা হয়েছে।",
+      deposit: manualDepositRecord
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -1315,14 +1398,18 @@ app.post("/api/admin/approve-deposit", async (req, res) => {
 
 app.post("/api/admin/reject-deposit", async (req, res) => {
   try {
-    const { order_no, reason } = req.body;
-    if (!order_no) {
+    const { order_no, doc_id, uid: reqUid, reason } = req.body;
+    const cleanOrderNo = String(order_no || doc_id || "").trim().replace(/^ProPay-/i, "");
+    if (!cleanOrderNo) {
       return res.status(400).json({ success: false, error: "Missing order_no" });
     }
-    const cleanOrderNo = String(order_no).trim().replace(/^ProPay-/i, "");
     const localList = getLocalTransactions();
-    const existingLocal = localList.find((x: any) => x.id === cleanOrderNo || x.order_no === cleanOrderNo || x.depositNo === cleanOrderNo);
-    let uid = existingLocal?.uid || "";
+    const existingLocal = localList.find((x: any) => 
+      x.id === cleanOrderNo || x.order_no === cleanOrderNo || x.depositNo === cleanOrderNo ||
+      (x.order_no && String(x.order_no).replace(/^ProPay-/i, "") === cleanOrderNo)
+    );
+    let uid = reqUid || existingLocal?.uid || "";
+    let amount = Number(existingLocal?.amount || 0);
 
     const adminApp = getFirebaseAdmin();
     if (adminApp) {
@@ -1334,6 +1421,7 @@ app.post("/api/admin/reject-deposit", async (req, res) => {
         if (depSnap && depSnap.exists) {
           const depData = depSnap.data();
           if (!uid) uid = depData?.uid;
+          if (!amount) amount = Number(depData?.amount || 0);
           if (depData?.status === "approved" || depData?.credited === true) {
             return res.status(400).json({ success: false, error: "ইতিমধ্যে অ্যাপ্রুভড হওয়া ডিপোজিট বাতিল করা সম্ভব নয়!" });
           }
@@ -1342,9 +1430,14 @@ app.post("/api/admin/reject-deposit", async (req, res) => {
         const rejectPayload = {
           id: cleanOrderNo,
           order_no: cleanOrderNo,
+          orderId: cleanOrderNo,
+          depositNo: cleanOrderNo,
+          serialNo: cleanOrderNo,
           status: "rejected",
           cancelled: true,
-          rejectReason: reason || "ভুল বা ফেক ট্রানজ্যাকশন আইডি",
+          amount: amount,
+          rejectReason: reason || "ডিপোজিট রিকোয়েস্ট বাতিল করা হয়েছে",
+          description: "ডিপোজিট রিকোয়েস্ট বাতিল করা হয়েছে (পেমেন্ট সম্পন্ন হয়নি)।",
           updatedAt: new Date().toISOString()
         };
 
@@ -1354,23 +1447,235 @@ app.post("/api/admin/reject-deposit", async (req, res) => {
         if (uid) {
           await db.collection("users").doc(uid).collection("history").doc(cleanOrderNo).set(rejectPayload, { merge: true }).catch(() => {});
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn("[reject-deposit] Firestore warning:", e);
+      }
     }
 
     saveLocalTransaction({
       id: cleanOrderNo,
       order_no: cleanOrderNo,
+      orderId: cleanOrderNo,
+      depositNo: cleanOrderNo,
+      serialNo: cleanOrderNo,
       uid: uid || "",
+      amount: amount,
       status: "rejected",
       cancelled: true,
-      rejectReason: reason || "ভুল বা ফেক ট্রানজ্যাকশন আইডি",
+      rejectReason: reason || "ডিপোজিট রিকোয়েস্ট বাতিল করা হয়েছে",
+      description: "ডিপোজিট রিকোয়েস্ট বাতিল করা হয়েছে (পেমেন্ট সম্পন্ন হয়নি)।",
       updatedAt: new Date().toISOString()
     });
 
-    return res.json({ success: true, message: "ডিপোজিট রিজেক্ট/বাতিল করা হয়েছে।" });
+    return res.json({ success: true, message: "ডিপোজিট সফলভাবে রিজেক্ট/বাতিল করা হয়েছে।" });
   } catch (err: any) {
     console.error("[REJECT DEPOSIT ERROR]:", err);
     return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin Approve Withdrawal Endpoint
+app.post("/api/admin/approve-withdrawal", async (req, res) => {
+  try {
+    const { id, withdrawNo, doc_id, uid: reqUid, amount } = req.body;
+    const cleanId = String(id || withdrawNo || doc_id || "").trim();
+    if (!cleanId) {
+      return res.status(400).json({ success: false, error: "Missing withdrawal id or withdrawNo" });
+    }
+    const localList = getLocalTransactions();
+    const existingLocal = localList.find((x: any) => 
+      x.id === cleanId || x.withdrawNo === cleanId || x.serialNo === cleanId || x.order_no === cleanId
+    );
+    let uid = reqUid || existingLocal?.uid || "";
+    let amt = Number(amount || existingLocal?.amount || 0);
+
+    const adminApp = getFirebaseAdmin();
+    if (adminApp) {
+      try {
+        const db = adminApp.firestore();
+        const wRef = db.collection("withdrawals").doc(cleanId);
+        const wSnap = await wRef.get().catch(() => null);
+        if (wSnap && wSnap.exists) {
+          const wData = wSnap.data() || {};
+          if (!uid) uid = wData.uid;
+          if (!amt) amt = Number(wData.amount || 0);
+        }
+        const approvedPayload = {
+          id: cleanId,
+          withdrawNo: cleanId,
+          serialNo: cleanId,
+          status: "approved",
+          type: "withdraw",
+          amount: amt,
+          uid: uid,
+          processedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          description: "উইথড্র সফলভাবে সম্পন্ন হয়েছে (সাকসেসফুল)"
+        };
+        await wRef.set(approvedPayload, { merge: true }).catch(() => {});
+        await db.collection("transactions").doc(cleanId).set(approvedPayload, { merge: true }).catch(() => {});
+        if (uid) {
+          await db.collection("users").doc(uid).collection("history").doc(cleanId).set(approvedPayload, { merge: true }).catch(() => {});
+        }
+      } catch (e) {
+        console.warn("[approve-withdrawal] Firestore error:", e);
+      }
+    }
+
+    saveLocalTransaction({
+      id: cleanId,
+      withdrawNo: cleanId,
+      serialNo: cleanId,
+      uid: uid,
+      amount: amt,
+      type: "withdraw",
+      status: "approved",
+      description: "উইথড্র সফলভাবে সম্পন্ন হয়েছে (সাকসেসফুল)",
+      processedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    console.log(`[Admin] Withdrawal ${cleanId} approved for user ${uid}. Amount: ৳${amt}`);
+    return res.json({ success: true, message: "উইথড্র সফলভাবে অ্যাপ্রুভ হয়েছে।" });
+  } catch (err: any) {
+    console.error("[APPROVE WITHDRAWAL ERROR]:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin Reject Withdrawal Endpoint (Refunds user balance)
+app.post("/api/admin/reject-withdrawal", async (req, res) => {
+  try {
+    const { id, withdrawNo, doc_id, uid: reqUid, amount, reason } = req.body;
+    const cleanId = String(id || withdrawNo || doc_id || "").trim();
+    if (!cleanId) {
+      return res.status(400).json({ success: false, error: "Missing withdrawal id or withdrawNo" });
+    }
+    const localList = getLocalTransactions();
+    const existingLocal = localList.find((x: any) => 
+      x.id === cleanId || x.withdrawNo === cleanId || x.serialNo === cleanId || x.order_no === cleanId
+    );
+    let uid = reqUid || existingLocal?.uid || "";
+    let amt = Number(amount || existingLocal?.amount || 0);
+
+    const adminApp = getFirebaseAdmin();
+    let refundedBal = "0.00";
+    if (adminApp) {
+      try {
+        const db = adminApp.firestore();
+        const wRef = db.collection("withdrawals").doc(cleanId);
+        const wSnap = await wRef.get().catch(() => null);
+        let alreadyRejected = false;
+        if (wSnap && wSnap.exists) {
+          const wData = wSnap.data() || {};
+          if (!uid) uid = wData.uid;
+          if (!amt) amt = Number(wData.amount || 0);
+          if (wData.status === "rejected" || wData.status === "cancelled") {
+            alreadyRejected = true;
+          }
+        }
+        // Refund balance to user if not already refunded
+        if (uid && amt > 0 && !alreadyRejected) {
+          const userRef = db.collection("users").doc(uid);
+          const uSnap = await userRef.get().catch(() => null);
+          if (uSnap && uSnap.exists) {
+            const curBal = parseFloat(String(uSnap.data()?.balance || "0").replace(/,/g, "")) || 0;
+            refundedBal = (curBal + amt).toFixed(2);
+            await userRef.set({
+              balance: refundedBal,
+              updatedAt: new Date().toISOString()
+            }, { merge: true }).catch(() => {});
+          }
+        }
+
+        const rejectPayload = {
+          id: cleanId,
+          withdrawNo: cleanId,
+          serialNo: cleanId,
+          status: "rejected",
+          cancelled: true,
+          type: "withdraw",
+          amount: amt,
+          uid: uid,
+          rejectReason: reason || "উইথড্র রিকোয়েস্টটি বাতিল করা হয়েছে এবং ব্যালেন্স ফেরত দেওয়া হয়েছে।",
+          description: "আপনার উইথড্র রিকোয়েস্টটি বাতিল করা হয়েছে এবং ব্যালেন্স ফেরত দেওয়া হয়েছে।",
+          processedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        await wRef.set(rejectPayload, { merge: true }).catch(() => {});
+        await db.collection("transactions").doc(cleanId).set(rejectPayload, { merge: true }).catch(() => {});
+        if (uid) {
+          await db.collection("users").doc(uid).collection("history").doc(cleanId).set(rejectPayload, { merge: true }).catch(() => {});
+        }
+      } catch (e) {
+        console.warn("[reject-withdrawal] Firestore error:", e);
+      }
+    }
+
+    saveLocalTransaction({
+      id: cleanId,
+      withdrawNo: cleanId,
+      serialNo: cleanId,
+      uid: uid,
+      amount: amt,
+      type: "withdraw",
+      status: "rejected",
+      cancelled: true,
+      description: "আপনার উইথড্র রিকোয়েস্টটি বাতিল করা হয়েছে এবং ব্যালেন্স ফেরত দেওয়া হয়েছে।",
+      processedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    console.log(`[Admin] Withdrawal ${cleanId} rejected for user ${uid}. Refunded: ৳${amt}`);
+    return res.json({
+      success: true,
+      message: "উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে এবং ইউজারের ব্যালেন্স ফেরত দেওয়া হয়েছে।",
+      userBalance: refundedBal
+    });
+  } catch (err: any) {
+    console.error("[REJECT WITHDRAWAL ERROR]:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin All Withdrawals List Endpoint
+app.get("/api/admin/all-withdrawals", async (req, res) => {
+  try {
+    const localList = getLocalTransactions().filter((t: any) => t.type === "withdraw" || t.withdrawNo);
+    let firestoreList: any[] = [];
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) {
+        const db = adminApp.firestore();
+        const snap = await db.collection("withdrawals").orderBy("timestamp", "desc").limit(200).get().catch(() => ({ docs: [] }));
+        snap.docs.forEach((d: any) => firestoreList.push({ id: d.id, ...d.data() }));
+      }
+    } catch (e) {}
+
+    const map = new Map<string, any>();
+    for (const item of [...firestoreList, ...localList]) {
+      const key = String(item.id || item.withdrawNo || item.serialNo || item.order_no || (item.timestamp + "_" + item.amount));
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, item);
+      } else {
+        const isApproved = existing.status === "approved" || existing.status === "success" || item.status === "approved" || item.status === "success";
+        const isRejected = !isApproved && (existing.status === "rejected" || existing.status === "cancelled" || item.status === "rejected" || item.status === "cancelled");
+        map.set(key, {
+          ...existing,
+          ...item,
+          status: isApproved ? "approved" : (isRejected ? "rejected" : (item.status || existing.status || "pending"))
+        });
+      }
+    }
+    const withdrawals = Array.from(map.values()).sort((a: any, b: any) => {
+      const ta = new Date(a.timestamp || a.createdAt || 0).getTime();
+      const tb = new Date(b.timestamp || b.createdAt || 0).getTime();
+      return tb - ta;
+    });
+    return res.json({ success: true, withdrawals });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
   }
 });
 
