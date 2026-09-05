@@ -26,7 +26,37 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Firebase Admin initialization (lazy)
+// Firestore Quota Circuit Breaker & Safety Mechanism
+let firestoreQuotaExceededUntil = 0;
+export function isFirestoreQuotaExceeded(): boolean {
+  return Date.now() < firestoreQuotaExceededUntil;
+}
+export function isFirestoreCircuitOpen(): boolean {
+  return isFirestoreQuotaExceeded();
+}
+export function markFirestoreQuotaExceeded(cooldownMs = 5 * 60 * 1000) {
+  firestoreQuotaExceededUntil = Date.now() + cooldownMs;
+  console.warn(`[Firestore CircuitBreaker] Quota exceeded. Pausing Firestore queries for ${cooldownMs / 1000}s and using resilient local storage.`);
+}
+export function handleFirestoreError(err: any, context = "") {
+  const msg = String(err?.message || err || "");
+  const code = err?.code;
+  if (code === 8 || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("Quota exceeded")) {
+    markFirestoreQuotaExceeded(5 * 60 * 1000); // 5 min cooldown
+    return true;
+  }
+  if (context) {
+    console.warn(`[${context}] Firestore error:`, msg);
+  }
+  return false;
+}
+export function tripFirestoreQuotaCircuit(err: any, context = "") {
+  return handleFirestoreError(err, context);
+}
 function getFirebaseAdmin() {
+  if (isFirestoreCircuitOpen()) {
+    return null;
+  }
   if (admin.apps.length === 0) {
     const rawKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     if (rawKey && rawKey.trim() !== "{}" && rawKey.trim() !== "") {
@@ -363,8 +393,11 @@ app.get("/api/admin/all-deposits", async (req, res) => {
     let firestoreList: any[] = [];
     try {
       const adminApp = getFirebaseAdmin();
-      if (adminApp) {
-        const depSnap = await adminApp.firestore().collection("deposits").limit(200).get().catch(() => ({ docs: [] }));
+      if (adminApp && !isFirestoreQuotaExceeded()) {
+        const depSnap = await adminApp.firestore().collection("deposits").limit(200).get().catch((err: any) => {
+          handleFirestoreError(err, "admin-all-deposits");
+          return { docs: [] };
+        });
         depSnap.docs.forEach((d: any) => {
           firestoreList.push({
             id: d.id,
@@ -918,7 +951,7 @@ app.post("/api/verify-payment", async (req, res) => {
       depositData = { ...localItem };
     }
 
-    if (db) {
+    if (db && !isFirestoreQuotaExceeded()) {
       try {
         // 1. Direct get
         let dSnap = await db.collection("deposits").doc(cleanOrderNo).get();
@@ -931,8 +964,8 @@ app.post("/api/verify-payment", async (req, res) => {
             depositData = { ...depositData, ...qSnap.docs[0].data() };
           }
         }
-      } catch (dbErr) {
-        console.warn("[verify-payment] Firestore read warning:", dbErr);
+      } catch (dbErr: any) {
+        handleFirestoreError(dbErr, "verify-payment");
       }
     }
 
@@ -969,28 +1002,69 @@ app.post("/api/verify-payment", async (req, res) => {
 // Validate Manual / Direct TrxID Endpoint
 app.post("/api/validate-manual-deposit", async (req, res) => {
   try {
-    const { uid, transactionId, order_no, amount } = req.body;
-    const cleanTxId = String(transactionId || order_no || "").trim();
+    const { uid, transactionId, order_no, amount, method } = req.body;
+    const cleanTxId = String(transactionId || order_no || "").trim().toUpperCase();
+    const cleanMethod = String(method || "").toLowerCase();
+
     if (!cleanTxId) {
-      return res.status(400).json({ success: false, error: "ট্রানজ্যাকশন আইডি প্রদান করুন।" });
+      return res.status(400).json({ success: false, error: "অনুগ্রহ করে ট্রানজ্যাকশন আইডি (TrxID) প্রদান করুন।" });
     }
 
-    // 1. Fake / Bad Format Check (Minimum 8 chars, alphanumeric, no repetitive chars)
-    if (cleanTxId.length < 8 || !/^[a-zA-Z0-9_-]+$/.test(cleanTxId) || /^(.)\1+$/.test(cleanTxId)) {
+    // 1. Comprehensive Fake TrxID Checks
+    if (cleanTxId.length < 8 || cleanTxId.length > 20) {
       return res.status(400).json({
         success: false,
-        error: "ভুল বা ফেক ট্রানজ্যাকশন আইডি! ফরম্যাট সঠিক নয় (কমপক্ষে ৮ অক্ষরের সঠিক ট্রানজ্যাকশন আইডি দিন)।"
+        error: "ভুল বা অকার্যকর ট্রানজ্যাকশন আইডি! সঠিক TrxID দিন (কমপক্ষে ৮ অক্ষর)।"
       });
     }
 
-    let db = null;
-    try {
-      const adminApp = getFirebaseAdmin();
-      if (adminApp) db = adminApp.firestore();
-    } catch (e) {}
+    if (!/^[A-Z0-9]+$/.test(cleanTxId)) {
+      return res.status(400).json({
+        success: false,
+        error: "ট্রানজ্যাকশন আইডিতে কোনো স্পেস বা স্পেশাল ক্যারেক্টার গ্রহণযোগ্য নয়। শুধু ইংরেজি অক্ষর ও সংখ্যা ব্যবহার করুন।"
+      });
+    }
 
-    // 2. Strict 1-Time Usage / Duplicate Check across Database
-    if (db) {
+    // Repetitive patterns like 11111111, AAAAAAAA
+    if (/^(.)\1+$/.test(cleanTxId)) {
+      return res.status(400).json({
+        success: false,
+        error: "ফেক বা ডামি ট্রানজ্যাকশন আইডি গ্রহণযোগ্য নয়! সঠিক TrxID দিন।"
+      });
+    }
+
+    // Common fake test patterns
+    const commonFakes = [
+      "12345678", "123456789", "1234567890", "87654321", "00000000", "11111111", "99999999",
+      "AAAAAAAA", "BBBBBBBB", "XXXXXXXX", "TRANSACTION", "TEST1234", "TESTTEST", "BKASHTRX", "NAGADTRX"
+    ];
+    if (commonFakes.includes(cleanTxId)) {
+      return res.status(400).json({
+        success: false,
+        error: "ভুল বা ফেক ট্রানজ্যাকশন আইডি! কোনো ডামি বা পরীক্ষামূলক আইডি গ্রহণযোগ্য নয়।"
+      });
+    }
+
+    // Must have at least 1 digit and not be purely alphabets without numbers (unless binance/crypto)
+    if (!["binance", "usdt", "usdterc20"].includes(cleanMethod)) {
+      if (/^[A-Z]+$/.test(cleanTxId)) {
+        return res.status(400).json({
+          success: false,
+          error: "ভুল ট্রানজ্যাকশন আইডি! বিকাশ বা নগদের TrxID-তে অবশ্যই সংখ্যা থাকতে হবে।"
+        });
+      }
+    }
+
+    let db = null;
+    if (!isFirestoreQuotaExceeded()) {
+      try {
+        const adminApp = getFirebaseAdmin();
+        if (adminApp) db = adminApp.firestore();
+      } catch (e) {}
+    }
+
+    // 2. Strict 1-Time Usage / Duplicate Check across Database (Approved OR Pending)
+    if (db && !isFirestoreQuotaExceeded()) {
       try {
         const querySnap = await db.collection("deposits")
           .where("transactionId", "==", cleanTxId)
@@ -1003,12 +1077,12 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
             if (d.status === "approved" || d.status === "success" || d.credited === true) {
               return res.status(400).json({
                 success: false,
-                error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে! একই আইডি বারবার ব্যবহার করা সম্ভব নয়।"
+                error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে সফলভাবে ব্যবহার করা হয়েছে এবং টাকা এড হয়ে গেছে! একটি ট্রানজ্যাকশন আইডি দিয়ে শুধুমাত্র একবারই টাকা এড করা সম্ভব।"
               });
-            } else if (d.status === "pending") {
+            } else if (d.status === "pending" || d.status === "processing") {
               return res.status(400).json({
                 success: false,
-                error: "এই ট্রানজ্যাকশন আইডি দিয়ে ইতিমধ্যে একটি ডিপোজিট রিকোয়েস্ট অপেক্ষমান রয়েছে।"
+                error: "এই ট্রানজ্যাকশন আইডি দিয়ে ইতিমধ্যে একটি ডিপোজিট রিকোয়েস্ট অপেক্ষমান রয়েছে। অনুগ্রহ করে অপেক্ষা করুন।"
               });
             }
           }
@@ -1030,8 +1104,10 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
             }
           }
         }
-      } catch (dbErr) {
-        console.warn("[validate-manual-deposit] Firestore duplicate check warning:", dbErr);
+      } catch (dbErr: any) {
+        if (!tripFirestoreQuotaCircuit(dbErr, "validate-manual-deposit")) {
+          console.warn("[validate-manual-deposit] Firestore duplicate check warning:", dbErr?.message || dbErr);
+        }
       }
     }
 
@@ -1042,11 +1118,22 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
       (x.transactionId === cleanTxId || x.order_no === cleanTxId || x.id === cleanTxId) &&
       (x.status === "approved" || x.credited === true)
     );
-
     if (isDupApproved) {
       return res.status(400).json({
         success: false,
-        error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে!"
+        error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে! একই আইডি বারবার ব্যবহার করা সম্পূর্ণ নিষিদ্ধ।"
+      });
+    }
+
+    const isDupPending = localList.some((x: any) => 
+      x.id !== order_no && x.order_no !== order_no &&
+      (x.transactionId === cleanTxId || x.order_no === cleanTxId || x.id === cleanTxId) &&
+      (x.status === "pending" || x.status === "processing")
+    );
+    if (isDupPending) {
+      return res.status(400).json({
+        success: false,
+        error: "এই ট্রানজ্যাকশন আইডি দিয়ে ইতিমধ্যে একটি ডিপোজিট রিকোয়েস্ট পেন্ডিং রয়েছে।"
       });
     }
 
@@ -1264,11 +1351,13 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
     const results: any[] = [];
     let userDocData: any = null;
 
-    if (db) {
+    if (db && !isFirestoreQuotaExceeded()) {
       try {
         const uSnap = await db.collection("users").doc(uid).get();
         if (uSnap.exists) userDocData = uSnap.data();
-      } catch (err: any) {}
+      } catch (err: any) {
+        handleFirestoreError(err, "auto-check-user-doc");
+      }
 
       try {
         const depSnap = await db.collection("deposits").where("uid", "==", uid).limit(5).get();
@@ -1668,6 +1757,7 @@ async function startServer() {
     } catch (localErr) {}
 
     // 2. Try Firestore auto-cancel with graceful handling for Quota Exceeded / Code 8
+    if (isFirestoreQuotaExceeded()) return;
     const adminApp = getFirebaseAdmin();
     if (!adminApp) return;
     
@@ -1709,7 +1799,7 @@ async function startServer() {
             }
         }
     } catch (error: any) {
-        if (error?.code === 8 || error?.message?.includes("RESOURCE_EXHAUSTED") || error?.message?.includes("Quota exceeded")) {
+        if (handleFirestoreError(error, "Cron")) {
             console.warn('[Cron] Firestore quota exceeded during auto-cancel check, local transactions auto-cancelled gracefully.');
         } else {
             console.error('[Cron] Error running auto-cancel check:', error?.message || error);
