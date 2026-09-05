@@ -16,11 +16,14 @@
     "amount": 200,
     "finalCredit": 200,
     "method": "nagad",
-    "status": "pending",
+    "status": "approved",
     "gateway": "propay",
     "timestamp": "2026-09-05T06:05:14.114Z",
     "createdAt": "2026-09-05T06:05:14.114Z",
-    "description": "ProPay NAGAD Deposit (ORD1788588314113)"
+    "description": "ProPay NAGAD Deposit (ORD1788588314113)",
+    "updatedAt": "2026-09-05T06:32:38.315Z",
+    "credited": true,
+    "notified": true
   },
   {
     "id": "ORD1788588311664",
@@ -39,11 +42,15 @@
     "amount": 200,
     "finalCredit": 200,
     "method": "bkash",
-    "status": "pending",
+    "status": "approved",
     "gateway": "propay",
     "timestamp": "2026-09-05T06:05:11.664Z",
     "createdAt": "2026-09-05T06:05:11.664Z",
-    "description": "ProPay BKASH Deposit (ORD1788588311664)"
+    "description": "ডিপোজিট অ্যাপ্রুভ (BKASH) ৳200",
+    "updatedAt": "2026-09-05T06:33:02.095Z",
+    "credited": true,
+    "approvedAt": "2026-09-05T06:33:02.094Z",
+    "notified": true
   },
   {
     "id": "ORD-1725519800",
@@ -57,7 +64,8 @@
     "finalCredit": 200,
     "gateway": "propay",
     "updatedAt": "2026-09-05T06:05:05.637Z",
-    "createdAt": "2026-09-05T06:05:05.637Z"
+    "createdAt": "2026-09-05T06:05:05.637Z",
+    "username": "User"
   },
   {
     "id": "ORD1788433940950",
@@ -74,7 +82,7 @@
     "amount": 200,
     "finalCredit": 200,
     "method": "bkash",
-    "status": "cancelled",
+    "status": "pending",
     "timestamp": "2026-09-03T11:12:20.950Z",
     "createdAt": "2026-09-03T11:12:20.950Z",
     "gateway": "propay",
@@ -82,7 +90,7 @@
     "transactionId": "ORD1788433940950",
     "displayAmount": 200,
     "description": "ProPay ডিপোজিট 200 টাকা (BKASH)",
-    "updatedAt": "2026-09-03T11:21:00.301Z"
+    "updatedAt": "2026-09-05T06:32:33.637Z"
   },
   {
     "id": "ORD999999",
@@ -92,11 +100,11 @@
     "type": "deposit",
     "amount": 500,
     "method": "bkash",
-    "status": "cancelled",
+    "status": "pending",
     "timestamp": "2026-09-03T11:03:29.767Z",
     "createdAt": "2026-09-03T11:03:29.767Z",
     "finalCredit": 500,
-    "updatedAt": "2026-09-03T11:12:00.514Z"
+    "updatedAt": "2026-09-05T06:32:33.637Z"
   },
   {
     "id": "ORD-20260902-637093",
@@ -114,12 +122,12 @@
     "amount": 250,
     "finalCredit": 250,
     "method": "bkash",
-    "status": "cancelled",
+    "status": "pending",
     "gateway": "propay",
     "timestamp": "2026-09-02T23:17:00.488Z",
     "createdAt": "2026-09-02T23:17:00.488Z",
     "description": "ProPay BKASH Deposit (ORD-20260902-637093)",
-    "updatedAt": "2026-09-03T11:00:00.325Z"
+    "updatedAt": "2026-09-05T06:32:33.637Z"
   },
   {
     "id": "ORD-20260902-350157",
@@ -137,12 +145,12 @@
     "amount": 500,
     "finalCredit": 500,
     "method": "bkash",
-    "status": "cancelled",
+    "status": "pending",
     "gateway": "propay",
     "timestamp": "2026-09-02T23:16:50.135Z",
     "createdAt": "2026-09-02T23:16:50.135Z",
     "description": "ProPay BKASH Deposit (ORD-20260902-350157)",
-    "updatedAt": "2026-09-03T11:00:00.325Z"
+    "updatedAt": "2026-09-05T06:32:33.637Z"
   },
   {
     "id": "ORD-TEST456",
@@ -152,13 +160,13 @@
     "amount": 300,
     "finalCredit": 300,
     "method": "nagad",
-    "status": "cancelled",
+    "status": "pending",
     "gateway": "propay",
     "timestamp": "2026-09-02T23:10:32.983Z",
     "createdAt": "2026-09-02T23:10:32.983Z",
     "description": "ProPay NAGAD Deposit",
     "username": "USER123",
-    "updatedAt": "2026-09-03T11:00:00.325Z"
+    "updatedAt": "2026-09-05T06:32:33.637Z"
   },
   {
     "id": "ORD-TEST123",
@@ -168,12 +176,12 @@
     "amount": 200,
     "finalCredit": 200,
     "method": "bkash",
-    "status": "cancelled",
+    "status": "pending",
     "gateway": "propay",
     "timestamp": "2026-09-02T23:10:28.354Z",
     "createdAt": "2026-09-02T23:10:28.354Z",
     "description": "ProPay BKASH Deposit",
     "username": "USER123",
-    "updatedAt": "2026-09-03T11:00:00.325Z"
+    "updatedAt": "2026-09-05T06:32:33.637Z"
   }
 ]

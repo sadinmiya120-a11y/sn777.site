@@ -394,7 +394,7 @@ app.get("/api/admin/all-deposits", async (req, res) => {
     try {
       const adminApp = getFirebaseAdmin();
       if (adminApp && !isFirestoreQuotaExceeded()) {
-        const depSnap = await adminApp.firestore().collection("deposits").limit(200).get().catch((err: any) => {
+        const depSnap = await adminApp.firestore().collection("deposits").limit(250).get().catch((err: any) => {
           handleFirestoreError(err, "admin-all-deposits");
           return { docs: [] };
         });
@@ -413,17 +413,35 @@ app.get("/api/admin/all-deposits", async (req, res) => {
       const orderNo = item.order_no || item.id || item.depositNo || item.serialNo || item.doc_id;
       if (!orderNo) continue;
       const key = String(orderNo).replace(/^ProPay-/i, "");
-      const existing = map.get(key) || {};
-      const cleanTxId = String(item.transactionId || existing.transactionId || key).replace(/^ProPay-/i, "");
+      const existing = map.get(key);
+      const cleanTxId = String(item.transactionId || existing?.transactionId || key).replace(/^ProPay-/i, "");
+      
+      let mergedStatus = item.status || "pending";
+      let isCredited = item.credited || false;
+      if (existing) {
+        const isApproved = existing.status === "approved" || existing.status === "success" || existing.credited === true ||
+                           item.status === "approved" || item.status === "success" || item.credited === true;
+        const isRejected = !isApproved && (existing.status === "rejected" || item.status === "rejected");
+        mergedStatus = isApproved ? "approved" : (isRejected ? "rejected" : (item.status || existing.status || "pending"));
+        isCredited = isApproved ? true : (item.credited || existing.credited || false);
+      }
+
       map.set(key, {
-        ...existing,
+        ...(existing || {}),
         ...item,
         id: key,
         order_no: key,
         orderId: key,
         depositNo: key,
         serialNo: key,
-        transactionId: cleanTxId
+        transactionId: cleanTxId,
+        status: mergedStatus,
+        credited: isCredited,
+        username: item.username || existing?.username || item.name || existing?.name || "User",
+        phone: item.phone || existing?.phone || item.userPhone || existing?.userPhone || "",
+        method: item.method || existing?.method || "bkash",
+        amount: Number(item.amount || existing?.amount || 0),
+        finalCredit: Number(item.finalCredit || existing?.finalCredit || item.amount || existing?.amount || 0)
       });
     }
 
@@ -443,7 +461,7 @@ app.get("/api/user-transactions", async (req, res) => {
   try {
     const uid = String(req.query.uid || "").trim();
     if (!uid) return res.status(400).json({ error: "Missing uid" });
-    const localList = getLocalTransactions().filter((t: any) => t.uid === uid);
+    const localList = getLocalTransactions().filter((t: any) => t.uid === uid || (t.username && t.username === uid));
     let firestoreList: any[] = [];
     try {
       const adminApp = getFirebaseAdmin();
@@ -1143,109 +1161,121 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
   }
 });
 
-// Admin Approve Deposit Endpoint (Strict 1-Time Credit Lock)
-// Admin Approve Deposit Endpoint (Dual-layer resilience)
+// Admin Approve Deposit Endpoint (Dual-layer resilience & instant user credit sync)
 app.post("/api/admin/approve-deposit", async (req, res) => {
   try {
     const { order_no, doc_id, uid: reqUid, username: reqUsername, amount, finalCredit: reqFinalCredit } = req.body;
-    const cleanOrderNo = String(order_no || doc_id || "").trim();
+    const cleanOrderNo = String(order_no || doc_id || "").trim().replace(/^ProPay-/i, "");
     if (!cleanOrderNo) {
       return res.status(400).json({ success: false, error: "Missing order_no or doc_id" });
     }
 
-    const requestedAmount = Number(amount) || 0;
-    const finalCredit = Number(reqFinalCredit || requestedAmount || 0);
+    const localList = getLocalTransactions();
+    const existingLocal = localList.find((x: any) => 
+      x.id === cleanOrderNo || x.order_no === cleanOrderNo || x.depositNo === cleanOrderNo || 
+      x.transactionId === cleanOrderNo || (x.order_no && String(x.order_no).replace(/^ProPay-/i, "") === cleanOrderNo)
+    );
 
-    let uid = reqUid || "";
-    let userUpdated = false;
+    let requestedAmount = Number(amount) || Number(existingLocal?.amount) || 0;
+    let finalCredit = Number(reqFinalCredit || existingLocal?.finalCredit || requestedAmount || 0);
 
-    const adminApp = getFirebaseAdmin();
-    if (adminApp) {
-      const db = adminApp.firestore();
-      try {
-        // 1. Try finding deposit doc
-        let depDoc = await db.collection("deposits").doc(cleanOrderNo).get().catch(() => null);
-        let depData = depDoc && depDoc.exists ? depDoc.data() : null;
+    let uid = reqUid || existingLocal?.uid || "";
+    let username = reqUsername || existingLocal?.username || "";
+    let phone = existingLocal?.phone || existingLocal?.userPhone || "";
+    let method = existingLocal?.method || "bkash";
 
-        if (!depData && doc_id && doc_id !== cleanOrderNo) {
-          depDoc = await db.collection("deposits").doc(String(doc_id)).get().catch(() => null);
-          if (depDoc && depDoc.exists) depData = depDoc.data();
-        }
+    let db: any = null;
+    let depDoc: any = null;
+    let depData: any = null;
 
-        if (!depData) {
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp) {
+        db = adminApp.firestore();
+        depDoc = await db.collection("deposits").doc(cleanOrderNo).get().catch(() => null);
+        if (depDoc && depDoc.exists) {
+          depData = depDoc.data();
+        } else {
           const qSnap = await db.collection("deposits").where("order_no", "==", cleanOrderNo).limit(1).get().catch(() => ({ empty: true, docs: [] }));
           if (!qSnap.empty) {
             depDoc = qSnap.docs[0];
             depData = depDoc.data();
           }
         }
+      }
+    } catch (e) {}
 
-        if (depData) {
-          if (depData.status === "approved" || depData.credited === true) {
-             return res.status(400).json({ success: false, error: "এই ট্রানজ্যাকশনটি ইতিমধ্যেই অ্যাপ্রুভ করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে! একই ট্রানজ্যাকশন দুইবার অ্যাপ্রুভ করা সম্ভব নয়।" });
-          }
-          if (depData.status === "rejected" || depData.cancelled === true) {
-             return res.status(400).json({ success: false, error: "এই ট্রানজ্যাকশনটি বাতিল (রিজেক্ট) করা হয়েছে। রিজেক্ট হওয়া ট্রানজ্যাকশন অ্যাপ্রুভ করা সম্ভব নয়।" });
-          }
-          if (!uid) uid = depData.uid;
+    if (depData) {
+      if (depData.credited === true && depData.status === "approved" && !req.body?.force) {
+        return res.status(400).json({ success: false, error: "এই ট্রানজ্যাকশনটি ইতিমধ্যেই অ্যাপ্রুভ করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে!" });
+      }
+      if (!uid) uid = depData.uid || "";
+      if (!username) username = depData.username || "";
+      if (!requestedAmount) requestedAmount = Number(depData.amount) || 0;
+      if (!finalCredit) finalCredit = Number(depData.finalCredit || depData.amount) || requestedAmount;
+      if (!method) method = depData.method || "bkash";
+    }
+
+    // Lookup user by username or phone if uid still missing
+    if (!uid && username && username !== "User" && db) {
+      try {
+        const uSnap = await db.collection("users").where("username", "==", username).limit(1).get().catch(() => ({ empty: true, docs: [] }));
+        if (!uSnap.empty) {
+          uid = uSnap.docs[0].id;
         }
+      } catch (e) {}
+    }
 
-        // Also check if any other deposit has the same transactionId and is already approved
-        let trxIdToCheck = depData?.transactionId || req.body?.transactionId || "";
-        trxIdToCheck = String(trxIdToCheck).trim();
-        if (trxIdToCheck && trxIdToCheck !== cleanOrderNo && !trxIdToCheck.startsWith("ORD")) {
-           const dupSnap = await db.collection("deposits").where("transactionId", "==", trxIdToCheck).where("status", "==", "approved").limit(1).get().catch(() => ({ empty: true, docs: [] }));
-           if (!dupSnap.empty) {
-              return res.status(400).json({ success: false, error: "এই ট্রানজ্যাকশন আইডিটি (" + trxIdToCheck + ") অন্য একটি ডিপোজিটে ইতিমধ্যেই অ্যাপ্রুভ করা হয়েছে! একই আইডি বারবার ব্যবহার করা অবৈধ।" });
-           }
+    // 1. Update user balance in Firestore
+    let newBal = "0.00";
+    if (db && uid) {
+      try {
+        const userRef = db.collection("users").doc(uid);
+        const userSnap = await userRef.get().catch(() => null);
+        if (userSnap && userSnap.exists) {
+          const userData = userSnap.data() || {};
+          const curBal = parseFloat(String(userData?.balance || "0").replace(/,/g, "")) || 0;
+          const curDep = parseFloat(String(userData?.totalDeposited || "0").replace(/,/g, "")) || 0;
+          const curCount = Number(userData?.approvedDepositsCount || 0);
+
+          newBal = (curBal + (finalCredit || requestedAmount)).toFixed(2);
+          const newTotalDep = curDep + requestedAmount;
+          const newCount = curCount + 1;
+
+          await userRef.set({
+            balance: newBal,
+            approvedDepositsCount: newCount,
+            totalDeposited: newTotalDep,
+            withdrawEnabled: (newTotalDep >= 940 && newCount >= 2),
+            updatedAt: new Date().toISOString()
+          }, { merge: true }).catch(() => {});
         }
+      } catch (userErr) {
+        console.warn("[approve-deposit] User balance update warning:", userErr);
+      }
+    }
 
-        // If UID still not found, try username lookup
-        if (!uid && (reqUsername || depData?.username)) {
-          const uName = reqUsername || depData?.username;
-          const uSnap = await db.collection("users").where("username", "==", uName).limit(1).get().catch(() => ({ empty: true, docs: [] }));
-          if (!uSnap.empty) {
-            uid = uSnap.docs[0].id;
-          }
-        }
+    // 2. Mark deposit approved in Firestore collections
+    const approvedPayload = {
+      id: cleanOrderNo,
+      order_no: cleanOrderNo,
+      orderId: cleanOrderNo,
+      depositNo: cleanOrderNo,
+      serialNo: cleanOrderNo,
+      uid: uid || "",
+      username: username || "User",
+      phone: phone,
+      method: method,
+      status: "approved",
+      credited: true,
+      amount: requestedAmount,
+      finalCredit: finalCredit || requestedAmount,
+      approvedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
 
-        // Update user balance in Firestore if uid exists
-        if (uid) {
-          try {
-            const userRef = db.collection("users").doc(uid);
-            const userSnap = await userRef.get();
-            const userData = userSnap.exists ? userSnap.data() : {};
-            const curBal = parseFloat(String(userData?.balance || "0").replace(/,/g, "")) || 0;
-            const curDep = parseFloat(String(userData?.totalDeposited || "0").replace(/,/g, "")) || 0;
-            const curCount = Number(userData?.approvedDepositsCount || 0);
-            
-            const newBal = (curBal + (finalCredit || requestedAmount)).toFixed(2);
-            const newTotalDep = curDep + requestedAmount;
-            const newCount = curCount + 1;
-
-            await userRef.set({
-              balance: newBal,
-              approvedDepositsCount: newCount,
-              totalDeposited: newTotalDep,
-              withdrawEnabled: (newTotalDep >= 940 && newCount >= 2),
-              updatedAt: new Date().toISOString()
-            }, { merge: true });
-            userUpdated = true;
-          } catch (userErr) {
-            console.warn("[approve-deposit] User balance update warning:", userErr);
-          }
-        }
-
-        // Mark deposit doc approved
-        const approvedPayload = {
-          status: "approved",
-          credited: true,
-          amount: requestedAmount,
-          finalCredit: finalCredit || requestedAmount,
-          approvedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
-
+    if (db) {
+      try {
         if (depDoc && depDoc.ref) {
           await depDoc.ref.set(approvedPayload, { merge: true }).catch(() => {});
         } else {
@@ -1256,28 +1286,26 @@ app.post("/api/admin/approve-deposit", async (req, res) => {
           await db.collection("users").doc(uid).collection("history").doc(cleanOrderNo).set(approvedPayload, { merge: true }).catch(() => {});
         }
       } catch (dbErr) {
-        console.warn("[approve-deposit] Firestore warning (fallback active):", dbErr);
+        console.warn("[approve-deposit] Firestore write warning:", dbErr);
       }
     }
 
-    // Save to local transactions store fallback
+    // 3. Save to local transactions store fallback
     saveLocalTransaction({
-      id: cleanOrderNo,
-      order_no: cleanOrderNo,
-      uid: uid || reqUid || "",
-      status: "approved",
-      credited: true,
-      amount: requestedAmount,
-      finalCredit: finalCredit || requestedAmount,
+      ...approvedPayload,
       type: "deposit",
-      updatedAt: new Date().toISOString()
+      description: `ডিপোজিট অ্যাপ্রুভ (${method.toUpperCase()}) ৳${requestedAmount}`,
+      notified: false
     });
+
+    console.log(`[Admin] Deposit ${cleanOrderNo} approved manually for user ${uid || username}. Amount: ৳${requestedAmount}, Final Credit: ৳${finalCredit}`);
 
     return res.json({
       success: true,
-      message: `ডিপোজিট অ্যাপ্রুভ হয়েছে এবং ইউজারের ব্যালেন্সে ৳${finalCredit || requestedAmount} যোগ করা হয়েছে।`,
+      message: `ডিপোজিট সফলভাবে অ্যাপ্রুভ হয়েছে এবং ইউজারের ব্যালেন্সে ৳${finalCredit || requestedAmount} যোগ করা হয়েছে।`,
       amount: requestedAmount,
-      finalCredit: finalCredit || requestedAmount
+      finalCredit: finalCredit || requestedAmount,
+      userBalance: newBal
     });
   } catch (err: any) {
     console.error("[APPROVE DEPOSIT ERROR]:", err);
@@ -1291,43 +1319,51 @@ app.post("/api/admin/reject-deposit", async (req, res) => {
     if (!order_no) {
       return res.status(400).json({ success: false, error: "Missing order_no" });
     }
-    const cleanOrderNo = String(order_no).trim();
+    const cleanOrderNo = String(order_no).trim().replace(/^ProPay-/i, "");
+    const localList = getLocalTransactions();
+    const existingLocal = localList.find((x: any) => x.id === cleanOrderNo || x.order_no === cleanOrderNo || x.depositNo === cleanOrderNo);
+    let uid = existingLocal?.uid || "";
+
     const adminApp = getFirebaseAdmin();
-    if (!adminApp) {
-      return res.status(500).json({ success: false, error: "Database connection failed" });
-    }
-    const db = adminApp.firestore();
-    const depositRef = db.collection("deposits").doc(cleanOrderNo);
-    const depSnap = await depositRef.get();
+    if (adminApp) {
+      try {
+        const db = adminApp.firestore();
+        const depositRef = db.collection("deposits").doc(cleanOrderNo);
+        const depSnap = await depositRef.get().catch(() => null);
 
-    let uid = "";
-    if (depSnap.exists) {
-      const depData = depSnap.data();
-      uid = depData?.uid;
-      if (depData?.status === "approved" || depData?.credited === true) {
-        return res.status(400).json({ success: false, error: "ইতিমধ্যে অ্যাপ্রুভড হওয়া ডিপোজিট বাতিল করা সম্ভব নয়!" });
-      }
-    }
+        if (depSnap && depSnap.exists) {
+          const depData = depSnap.data();
+          if (!uid) uid = depData?.uid;
+          if (depData?.status === "approved" || depData?.credited === true) {
+            return res.status(400).json({ success: false, error: "ইতিমধ্যে অ্যাপ্রুভড হওয়া ডিপোজিট বাতিল করা সম্ভব নয়!" });
+          }
+        }
 
-    const rejectPayload = {
-      status: "rejected",
-      cancelled: true,
-      rejectReason: reason || "ভুল বা ফেক ট্রানজ্যাকশন আইডি",
-      updatedAt: new Date().toISOString()
-    };
+        const rejectPayload = {
+          id: cleanOrderNo,
+          order_no: cleanOrderNo,
+          status: "rejected",
+          cancelled: true,
+          rejectReason: reason || "ভুল বা ফেক ট্রানজ্যাকশন আইডি",
+          updatedAt: new Date().toISOString()
+        };
 
-    await depositRef.set(rejectPayload, { merge: true });
-    await db.collection("transactions").doc(cleanOrderNo).set(rejectPayload, { merge: true });
+        await depositRef.set(rejectPayload, { merge: true }).catch(() => {});
+        await db.collection("transactions").doc(cleanOrderNo).set(rejectPayload, { merge: true }).catch(() => {});
 
-    if (uid) {
-      await db.collection("users").doc(uid).collection("history").doc(cleanOrderNo).set(rejectPayload, { merge: true });
+        if (uid) {
+          await db.collection("users").doc(uid).collection("history").doc(cleanOrderNo).set(rejectPayload, { merge: true }).catch(() => {});
+        }
+      } catch (e) {}
     }
 
     saveLocalTransaction({
       id: cleanOrderNo,
       order_no: cleanOrderNo,
+      uid: uid || "",
       status: "rejected",
       cancelled: true,
+      rejectReason: reason || "ভুল বা ফেক ট্রানজ্যাকশন আইডি",
       updatedAt: new Date().toISOString()
     });
 
@@ -1342,7 +1378,7 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
   try {
     const { uid } = req.body;
     if (!uid) return res.status(400).json({ error: "Missing uid" });
-    let db = null;
+    let db: any = null;
     try {
       const adminApp = getFirebaseAdmin();
       if (adminApp) db = adminApp.firestore();
@@ -1360,11 +1396,11 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
       }
 
       try {
-        const depSnap = await db.collection("deposits").where("uid", "==", uid).limit(5).get();
+        const depSnap = await db.collection("deposits").where("uid", "==", uid).limit(10).get();
         for (const doc of depSnap.docs) {
           const parsed = doc.data();
           const order_no = doc.id;
-          const isApproved = parsed.status === "approved" || parsed.status === "success";
+          const isApproved = parsed.status === "approved" || parsed.status === "success" || parsed.credited === true;
           const isUnnotified = parsed.notified === false || (parsed.notified !== true && parsed.notified !== "true");
           if (isApproved && isUnnotified) {
             const finalCredit = Number(parsed.finalCredit) || Number(parsed.creditedAmount) || Number(parsed.amount) || 0;
@@ -1378,11 +1414,45 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
                 finalCredit
               }
             });
-            await doc.ref.update({ notified: true });
+            await doc.ref.update({ notified: true }).catch(() => {});
           }
         }
       } catch (err: any) {}
     }
+
+    // Also check local storage transactions for this user
+    try {
+      const localList = getLocalTransactions();
+      let localModified = false;
+      for (const tx of localList) {
+        if ((tx.uid === uid || (tx.username && userDocData?.username && tx.username === userDocData.username)) && 
+            (tx.type === "deposit" || tx.depositNo || tx.gateway) && 
+            (tx.status === "approved" || tx.credited === true)) {
+          if (tx.notified === false || (tx.notified !== true && tx.notified !== "true")) {
+            const finalCredit = Number(tx.finalCredit) || Number(tx.amount) || 0;
+            const amount = Number(tx.amount) || finalCredit;
+            const order_no = tx.order_no || tx.id;
+            if (!results.some(r => r.order_no === order_no)) {
+              results.push({
+                order_no,
+                result: {
+                  success: true,
+                  status: "approved",
+                  amount,
+                  finalCredit
+                }
+              });
+            }
+            tx.notified = true;
+            localModified = true;
+          }
+        }
+      }
+      if (localModified) {
+        fs.writeFileSync(TX_STORE_FILE, JSON.stringify(localList, null, 2), "utf8");
+      }
+    } catch (e) {}
+
     return res.json({ success: true, results, user: userDocData });
   } catch (e: any) {
     return res.json({ success: true, results: [], user: null });
@@ -1732,19 +1802,19 @@ async function startServer() {
     res.sendFile(indexPath);
   });
 
-  // Auto-cancel deposits older than 7 minutes (Runs every 3 minutes to optimize quota)
-  cron.schedule('*/3 * * * *', async () => {
-    console.log('[Cron] Running auto-cancel check for pending deposits');
-    const sevenMinutesAgo = new Date(Date.now() - 7 * 60 * 1000).toISOString();
+  // Auto-cancel deposits maintenance (only for very stale abandoned records older than 24 hours)
+  cron.schedule('0 * * * *', async () => {
+    console.log('[Cron] Running maintenance check for stale deposits');
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-    // 1. Process local storage transactions auto-cancel
+    // 1. Process local storage stale transactions
     try {
       const localList = getLocalTransactions();
       let modified = false;
       for (const tx of localList) {
         if (tx.type === "deposit" && tx.status === "pending") {
           const tIso = tx.timestamp || tx.createdAt || "";
-          if (tIso && tIso < sevenMinutesAgo) {
+          if (tIso && tIso < oneDayAgo) {
             tx.status = "cancelled";
             tx.updatedAt = new Date().toISOString();
             modified = true;
@@ -1756,7 +1826,7 @@ async function startServer() {
       }
     } catch (localErr) {}
 
-    // 2. Try Firestore auto-cancel with graceful handling for Quota Exceeded / Code 8
+    // 2. Try Firestore cleanup for stale records older than 24h
     if (isFirestoreQuotaExceeded()) return;
     const adminApp = getFirebaseAdmin();
     if (!adminApp) return;
@@ -1765,6 +1835,7 @@ async function startServer() {
         const db = adminApp.firestore();
         const pendingDeposits = await db.collection('deposits')
             .where('status', '==', 'pending')
+            .limit(20)
             .get();
         
         for (const doc of pendingDeposits.docs) {
@@ -1773,12 +1844,12 @@ async function startServer() {
             if (createdDate && typeof createdDate.toDate === 'function') {
                 createdDate = createdDate.toDate().toISOString();
             } else if (createdDate && typeof createdDate === 'string') {
-                // Already string, nothing to do
+                // string
             } else {
                 continue;
             }
             
-            if (createdDate && createdDate < sevenMinutesAgo) {
+            if (createdDate && createdDate < oneDayAgo) {
                 const depositId = doc.id;
                 const uid = data.uid;
 
@@ -1800,9 +1871,7 @@ async function startServer() {
         }
     } catch (error: any) {
         if (handleFirestoreError(error, "Cron")) {
-            console.warn('[Cron] Firestore quota exceeded during auto-cancel check, local transactions auto-cancelled gracefully.');
-        } else {
-            console.error('[Cron] Error running auto-cancel check:', error?.message || error);
+            console.warn('[Cron] Firestore quota exceeded during maintenance.');
         }
     }
   });
