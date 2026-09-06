@@ -946,6 +946,130 @@ setInterval(() => {
 }, 15 * 60 * 1000);
 
 
+// Helper function to automatically approve deposit and credit user balance across Local Store & Firestore
+async function approveAndCreditDeposit(orderNoInput: string, paidAmountOverride?: number, reqUid?: string) {
+  const cleanOrderNo = String(orderNoInput || "").trim();
+  if (!cleanOrderNo) return null;
+
+  const localList = getLocalTransactions();
+  const existingLocal = localList.find((t: any) =>
+    t.id === cleanOrderNo || t.order_no === cleanOrderNo || t.depositNo === cleanOrderNo || t.serialNo === cleanOrderNo
+  );
+
+  let amount = paidAmountOverride || Number(existingLocal?.amount) || 0;
+  let uid = reqUid || existingLocal?.uid || "";
+  let username = existingLocal?.username || "";
+  let phone = existingLocal?.phone || existingLocal?.userPhone || "";
+
+  // 1. Save locally immediately
+  const updatedLocal = {
+    ...(existingLocal || {}),
+    id: cleanOrderNo,
+    order_no: cleanOrderNo,
+    orderId: cleanOrderNo,
+    depositNo: cleanOrderNo,
+    serialNo: cleanOrderNo,
+    uid: uid,
+    username: username,
+    phone: phone,
+    amount: amount,
+    finalCredit: amount,
+    status: "approved",
+    credited: true,
+    type: "deposit",
+    updatedAt: new Date().toISOString(),
+    approvedAt: new Date().toISOString()
+  };
+  saveLocalTransaction(updatedLocal);
+
+  // 2. Sync to Firestore safely
+  const adminApp = getFirebaseAdmin();
+  if (adminApp) {
+    try {
+      const db = adminApp.firestore();
+      const depRef = db.collection("deposits").doc(cleanOrderNo);
+      const depSnap = await Promise.race([
+        depRef.get(),
+        new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 2500))
+      ]).catch(() => null);
+
+      let depData: any = depSnap && depSnap.exists ? depSnap.data() : null;
+
+      if (!uid && depData) uid = depData.uid || "";
+      if (!amount && depData) amount = Number(depData.amount) || Number(depData.finalCredit) || 0;
+
+      // Idempotency: if already credited in Firestore, return
+      if (depData && depData.credited === true) {
+        console.log(`[approveAndCreditDeposit] Order ${cleanOrderNo} already credited in Firestore.`);
+        return updatedLocal;
+      }
+
+      const approvedPayload = {
+        id: cleanOrderNo,
+        order_no: cleanOrderNo,
+        orderId: cleanOrderNo,
+        depositNo: cleanOrderNo,
+        serialNo: cleanOrderNo,
+        status: "approved",
+        credited: true,
+        amount: amount,
+        finalCredit: amount,
+        approvedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      await Promise.race([
+        depRef.set(approvedPayload, { merge: true }),
+        new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 2500))
+      ]).catch(() => {});
+
+      await Promise.race([
+        db.collection("transactions").doc(cleanOrderNo).set(approvedPayload, { merge: true }),
+        new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 2500))
+      ]).catch(() => {});
+
+      if (uid) {
+        const userRef = db.collection("users").doc(uid);
+        const userSnap = await Promise.race([
+          userRef.get(),
+          new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 2500))
+        ]).catch(() => null);
+
+        if (userSnap && userSnap.exists) {
+          const uData = userSnap.data() || {};
+          const curBal = parseFloat(String(uData.balance || "0").replace(/,/g, "")) || 0;
+          const curDep = parseFloat(String(uData.totalDeposited || "0").replace(/,/g, "")) || 0;
+          const curCount = Number(uData.approvedDepositsCount || 0);
+
+          const newBal = (curBal + amount).toFixed(2);
+          const newTotalDep = curDep + amount;
+          const newCount = curCount + 1;
+
+          await Promise.race([
+            userRef.set({
+              balance: newBal,
+              approvedDepositsCount: newCount,
+              totalDeposited: newTotalDep,
+              withdrawEnabled: (newTotalDep >= 940 && newCount >= 2),
+              updatedAt: new Date().toISOString()
+            }, { merge: true }),
+            new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 2500))
+          ]).catch(() => {});
+        }
+
+        await Promise.race([
+          db.collection("users").doc(uid).collection("history").doc(cleanOrderNo).set(approvedPayload, { merge: true }),
+          new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 2500))
+        ]).catch(() => {});
+      }
+    } catch (dbErr) {
+      console.warn("[approveAndCreditDeposit] Firestore sync error:", dbErr);
+    }
+  }
+
+  return updatedLocal;
+}
+
 // Verify Payment Endpoint
 app.post("/api/verify-payment", async (req, res) => {
   try {
@@ -970,13 +1094,13 @@ app.post("/api/verify-payment", async (req, res) => {
     if (db) {
       try {
         // 1. Direct get
-        let dSnap = await db.collection("deposits").doc(cleanOrderNo).get();
-        if (dSnap.exists) {
+        let dSnap = await db.collection("deposits").doc(cleanOrderNo).get().catch(() => null);
+        if (dSnap && dSnap.exists) {
           depositData = { ...depositData, ...dSnap.data() };
         } else {
           // 2. Query by order_no field
-          let qSnap = await db.collection("deposits").where("order_no", "==", cleanOrderNo).limit(1).get();
-          if (!qSnap.empty) {
+          let qSnap = await db.collection("deposits").where("order_no", "==", cleanOrderNo).limit(1).get().catch(() => null);
+          if (qSnap && !qSnap.empty) {
             depositData = { ...depositData, ...qSnap.docs[0].data() };
           }
         }
@@ -997,8 +1121,6 @@ app.post("/api/verify-payment", async (req, res) => {
 
     const isApproved = depositData.status === "approved" || depositData.status === "success" || depositData.credited === true;
     const isPending = depositData.status === "pending" || depositData.status === "processing";
-    const isFailed = depositData.status === "failed" || depositData.status === "cancelled";
-
     const currentStatus = isApproved ? "approved" : (isPending ? "pending" : "failed");
 
     res.json({
@@ -1660,97 +1782,8 @@ app.all(["/callback.php", "/api/propay-callback"], async (req, res) => {
 
     // Payment Signature Verified!
     const paidAmount = parseFloat(amountStr) || 0;
-    const finalCredit = paidAmount;
 
-    // 1. Update Local Transactions Store
-    saveLocalTransaction({
-      id: order_no,
-      order_no: order_no,
-      orderId: order_no,
-      depositNo: order_no,
-      serialNo: order_no,
-      status: "approved",
-      credited: true,
-      amount: paidAmount,
-      finalCredit: finalCredit,
-      gateway: "propay",
-      updatedAt: new Date().toISOString()
-    });
-
-    // 2. Sync to Firestore & Update User Balance
-    const adminApp = getFirebaseAdmin();
-    if (adminApp) {
-      try {
-        const db = adminApp.firestore();
-        let uid = existingLocalTx?.uid || "";
-
-        // Find deposit document to get user ID if not found locally
-        const depDocRef = db.collection("deposits").doc(order_no);
-        const depSnap = await depDocRef.get().catch(() => null);
-        if (depSnap && depSnap.exists) {
-          const depData = depSnap.data() || {};
-          if (depData.credited === true) {
-            console.log(`[ProPay Callback] Order ${order_no} already credited in Firestore. Idempotent return.`);
-            return res.status(200).send("Success");
-          }
-          if (!uid) {
-            uid = depData.uid || "";
-          }
-        }
-
-        if (!uid) {
-          const txSnap = await db.collection("transactions").doc(order_no).get().catch(() => null);
-          if (txSnap && txSnap.exists) {
-            uid = txSnap.data()?.uid || "";
-          }
-        }
-
-        const approvedPayload = {
-          id: order_no,
-          order_no: order_no,
-          orderId: order_no,
-          depositNo: order_no,
-          serialNo: order_no,
-          status: "approved",
-          credited: true,
-          amount: paidAmount,
-          finalCredit: finalCredit,
-          gateway: "propay",
-          approvedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
-
-        await depDocRef.set(approvedPayload, { merge: true }).catch(() => {});
-        await db.collection("transactions").doc(order_no).set(approvedPayload, { merge: true }).catch(() => {});
-
-        if (uid) {
-          const userRef = db.collection("users").doc(uid);
-          const userSnap = await userRef.get().catch(() => null);
-          if (userSnap && userSnap.exists) {
-            const uData = userSnap.data() || {};
-            const curBal = parseFloat(String(uData.balance || "0").replace(/,/g, "")) || 0;
-            const curDep = parseFloat(String(uData.totalDeposited || "0").replace(/,/g, "")) || 0;
-            const curCount = Number(uData.approvedDepositsCount || 0);
-
-            const newBal = (curBal + finalCredit).toFixed(2);
-            const newTotalDep = curDep + paidAmount;
-            const newCount = curCount + 1;
-
-            await userRef.set({
-              balance: newBal,
-              approvedDepositsCount: newCount,
-              totalDeposited: newTotalDep,
-              withdrawEnabled: (newTotalDep >= 940 && newCount >= 2),
-              updatedAt: new Date().toISOString()
-            }, { merge: true }).catch(() => {});
-          }
-
-          await db.collection("users").doc(uid).collection("history").doc(order_no).set(approvedPayload, { merge: true }).catch(() => {});
-        }
-      } catch (dbErr) {
-        console.warn("[ProPay Callback] Firestore update warning:", dbErr);
-      }
-    }
+    await approveAndCreditDeposit(order_no, paidAmount, existingLocalTx?.uid);
 
     console.log(`[ProPay Callback] Deposit ${order_no} successfully verified and approved!`);
     return res.status(200).send("Success");
