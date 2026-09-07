@@ -1015,37 +1015,27 @@
       window.sendSnImage = function(fileInput) {
         const file = fileInput.files[0];
         if (!file) return;
-
         const reader = new FileReader();
         reader.onload = function(e) {
-          appendSnBubble('<img src="' + e.target.result + '" />', "user");
+          const imgDataUrl = e.target.result;
+          appendSnBubble('<img src="' + imgDataUrl + '" />', "user");
+          const userInfo = getUserDetails();
+          updateUserStrip();
+          fetch("/api/send-telegram-photo", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: userInfo.name,
+              userId: userInfo.userId,
+              balance: userInfo.balance,
+              deposit: userInfo.deposit,
+              imageBase64: imgDataUrl
+            })
+          }).catch(function(err) {
+            console.error("Error sending photo:", err);
+          });
         };
         reader.readAsDataURL(file);
-
-        const userInfo = getUserDetails();
-        updateUserStrip();
-
-        const captionText = 
-"🖼️ *New Image Attachment*\n" +
-"🌐 *Site:* Sn777.site\n" +
-"👤 *Name:* " + userInfo.name + "\n" +
-"🆔 *User ID:* `" + userInfo.userId + "`\n" +
-"💰 *Balance:* " + userInfo.balance + "\n" +
-"💳 *Total Deposit:* " + userInfo.deposit;
-
-        const formData = new FormData();
-        formData.append("chat_id", SN_GROUP_ID);
-        formData.append("photo", file);
-        formData.append("caption", captionText);
-        formData.append("parse_mode", "Markdown");
-
-        fetch("https://api.telegram.org/bot" + SN_BOT_TOKEN + "/sendPhoto", {
-          method: "POST",
-          body: formData
-        }).catch(function(err) {
-          console.error("Error sending photo:", err);
-        });
-
         fileInput.value = "";
       };
 
@@ -1067,46 +1057,34 @@
       };
 
       // Fetch Telegram Admin Replies
-      let snLastUpdateId = 0;
-      try {
-        var savedOffset = localStorage.getItem("sn777_last_tg_offset");
-        if (savedOffset) snLastUpdateId = parseInt(savedOffset, 10) || 0;
-      } catch(e) {}
-
+      const deliveredReplyIds = new Set();
       function fetchTelegramReplies() {
         const userInfo = getUserDetails();
-        fetch("https://api.telegram.org/bot" + SN_BOT_TOKEN + "/getUpdates?offset=" + (snLastUpdateId + 1))
+        if (!userInfo || !userInfo.userId) return;
+        fetch("/api/telegram-replies?userId=" + encodeURIComponent(userInfo.userId))
           .then(function(res) { return res.json(); })
           .then(function(data) {
-            if (data.ok && data.result && data.result.length > 0) {
-              data.result.forEach(function(update) {
-                snLastUpdateId = update.update_id;
-                try { localStorage.setItem("sn777_last_tg_offset", snLastUpdateId.toString()); } catch(e) {}
-                if (update.message && update.message.text) {
-                  const msgText = update.message.text.trim();
-                  const prefix = userInfo.userId + ":";
-                  if (msgText.toLowerCase().startsWith(prefix.toLowerCase())) {
-                    const replyText = msgText.substring(prefix.length).trim();
-                    if (replyText.toUpperCase() === "CLEAR") {
-                      const container = document.getElementById("snMsgContainer");
-                      if (container) {
-                        container.innerHTML = '<div class="sn-msg sn-received" >স্বাগতম! আমি Sn777 সাপোর্টটিম থেকে আপনাকে কীভাবে সাহায্য করতে পারি?<span class="sn-msg-time"></span></div>';
-                      }
-                      try {
-                        const uInfo = getUserDetails();
-                        localStorage.removeItem("sn777_chat_history_" + uInfo.userId);
-                      } catch(e) {}
-                    } else {
-                      appendSnBubble(replyText, "admin");
-                    }
+            if (data && data.success && Array.isArray(data.replies)) {
+              data.replies.forEach(function(reply) {
+                if (deliveredReplyIds.has(reply.id)) return;
+                deliveredReplyIds.add(reply.id);
+                const replyText = reply.text;
+                if (replyText.toUpperCase() === "CLEAR") {
+                  const container = document.getElementById("snMsgContainer");
+                  if (container) {
+                    container.innerHTML = '<div class="sn-msg-bubble sn-msg-admin">স্বাগতম! আমি Sn777 সাপোর্টটিম থেকে আপনাকে কীভাবে সাহায্য করতে পারি?<span class="sn-msg-time"></span></div>';
                   }
+                  try {
+                    localStorage.removeItem("sn777_chat_history_" + userInfo.userId);
+                  } catch(e) {}
+                } else {
+                  appendSnBubble(replyText, "admin", reply.time);
                 }
               });
             }
           })
           .catch(function(err) {});
       }
-
       loadSavedMessages();
       setInterval(fetchTelegramReplies, 3000);
       setInterval(updateUserStrip, 1500);

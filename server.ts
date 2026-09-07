@@ -712,17 +712,57 @@ app.post("/api/update-auth", async (req, res) => {
 
 
 // Server-side Telegram Proxy Endpoint for Live Chat
+const SN_BOT_TOKEN = "8877094989:AAGh9VBrp8E4gAJLsU4Ctj0r6-L0DLNOjbI";
+const SN_GROUP_ID = "-1003806717205";
+
+// In-memory store for admin replies indexed by userId
+const userRepliesStore = new Map<string, Array<{ id: number; text: string; time: string }>>();
+let globalTgOffset = 0;
+
+// Background polling of Telegram updates (prevents browser CORS & multi-client getUpdates collisions)
+async function pollTelegramUpdates() {
+  try {
+    const url = `https://api.telegram.org/bot${SN_BOT_TOKEN}/getUpdates?offset=${globalTgOffset + 1}&timeout=2`;
+    const res = await fetch(url).then(r => r.json()).catch(() => null);
+    if (res && res.ok && Array.isArray(res.result) && res.result.length > 0) {
+      for (const update of res.result) {
+        globalTgOffset = update.update_id;
+        if (update.message && update.message.text) {
+          const msgText = String(update.message.text).trim();
+          // Format: UserId: Reply Text or UserId: CLEAR
+          const match = msgText.match(/^([^:\s]+):\s*(.*)$/s);
+          if (match) {
+            const targetUserId = match[1].trim();
+            const replyText = match[2].trim();
+            if (!userRepliesStore.has(targetUserId)) {
+              userRepliesStore.set(targetUserId, []);
+            }
+            const list = userRepliesStore.get(targetUserId)!;
+            const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            list.push({ id: update.update_id, text: replyText, time: timeStr });
+            // Keep last 50 replies per user
+            if (list.length > 50) list.shift();
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // Silent fail
+  }
+}
+
+// Poll Telegram every 2.5 seconds
+setInterval(pollTelegramUpdates, 2500);
+
 app.post("/api/send-telegram", express.json({limit: "10mb"}), async (req, res) => {
   try {
     const { name, userId, balance, deposit, message } = req.body;
-    const SN_BOT_TOKEN = "8877094989:AAGh9VBrp8E4gAJLsU4Ctj0r6-L0DLNOjbI";
-    const SN_GROUP_ID = "-1003806717205";
 
     const payloadText = 
       "📩 New Live Message\n" +
       "🌐 Site: Sn777.site\n" +
       "👤 Name: " + (name || "User") + "\n" +
-      "🆔 User ID: " + (userId || "Guest") + "\n" +
+      "🆔 User ID: `" + (userId || "Guest") + "`\n" +
       "💰 Balance: " + (balance || "৳0.00") + "\n" +
       "💳 Total Deposit: " + (deposit || "৳0.00") + "\n" +
       "----------------------------------\n" +
@@ -734,7 +774,8 @@ app.post("/api/send-telegram", express.json({limit: "10mb"}), async (req, res) =
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: SN_GROUP_ID,
-        text: payloadText
+        text: payloadText,
+        parse_mode: "Markdown"
       })
     });
 
@@ -744,6 +785,60 @@ app.post("/api/send-telegram", express.json({limit: "10mb"}), async (req, res) =
     } else {
       return res.status(400).json({ success: false, error: data.description || "Telegram API error" });
     }
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Photo Proxy Endpoint
+app.post("/api/send-telegram-photo", express.json({limit: "25mb"}), async (req, res) => {
+  try {
+    const { name, userId, balance, deposit, imageBase64 } = req.body;
+    if (!imageBase64) return res.status(400).json({ success: false, error: "Missing image" });
+
+    const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    const captionText = 
+      "🖼️ New Image Attachment\n" +
+      "🌐 Site: Sn777.site\n" +
+      "👤 Name: " + (name || "User") + "\n" +
+      "🆔 User ID: `" + (userId || "Guest") + "`\n" +
+      "💰 Balance: " + (balance || "৳0.00") + "\n" +
+      "💳 Total Deposit: " + (deposit || "৳0.00");
+
+    const formData = new FormData();
+    formData.append("chat_id", SN_GROUP_ID);
+    formData.append("photo", new Blob([buffer], { type: "image/jpeg" }), "photo.jpg");
+    formData.append("caption", captionText);
+    formData.append("parse_mode", "Markdown");
+
+    const tgUrl = `https://api.telegram.org/bot${SN_BOT_TOKEN}/sendPhoto`;
+    const response = await fetch(tgUrl, {
+      method: "POST",
+      body: formData
+    });
+
+    const data = await response.json();
+    if (data.ok) {
+      return res.json({ success: true });
+    } else {
+      return res.status(400).json({ success: false, error: data.description || "Telegram API error" });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Endpoint for client to poll admin replies for a specific userId
+app.get("/api/telegram-replies", async (req, res) => {
+  try {
+    const userId = String(req.query.userId || "").trim();
+    if (!userId) return res.json({ success: true, replies: [] });
+
+    const list = userRepliesStore.get(userId) || [];
+    // Return copies and clear after delivery or return full list
+    return res.json({ success: true, replies: list });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
