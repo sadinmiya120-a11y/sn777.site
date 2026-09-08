@@ -320,19 +320,23 @@ app.post("/api/record-transaction", async (req, res) => {
     if (safeTx.type === "deposit") {
       const localList = getLocalTransactions();
       const existing = localList.find((item: any) => (item.id === docId || item.order_no === docId));
-      if (!existing || existing.status !== "approved") {
+      const reqStatus = String(safeTx.status || "").toLowerCase();
+      if (reqStatus === "cancelled" || reqStatus === "rejected" || reqStatus === "failed") {
+        safeTx.status = "cancelled";
+        safeTx.cancelled = true;
+      } else if (!existing || existing.status !== "approved") {
         safeTx.status = "pending";
+      } else {
+        safeTx.status = existing.status;
       }
     }
 
-    
     saveLocalTransaction(safeTx);
 
     // Asynchronously sync to Firestore if admin app exists without blocking response
     (async () => {
       try {
-        
-      const adminApp = getFirebaseAdmin();
+        const adminApp = getFirebaseAdmin();
         if (adminApp) {
           const db = adminApp.firestore();
           if (safeTx.type === "deposit") {
@@ -356,6 +360,57 @@ app.post("/api/record-transaction", async (req, res) => {
     })();
 
     return res.json({ success: true, status: safeTx.status });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint to cancel a transaction immediately across local store and database
+app.post("/api/cancel-transaction", async (req, res) => {
+  try {
+    const { order_no, id, uid } = req.body || {};
+    const targetId = String(order_no || id || "").replace(/^ProPay-/i, "").trim();
+    if (!targetId) {
+      return res.status(400).json({ error: "Missing order_no or id" });
+    }
+
+    // 1. Update in local storage
+    const localList = getLocalTransactions();
+    let modified = false;
+    for (const tx of localList) {
+      const txId = String(tx.id || tx.order_no || tx.transactionId || "").replace(/^ProPay-/i, "");
+      if (txId === targetId || tx.id === targetId || tx.order_no === targetId) {
+        if (tx.status !== "approved" && tx.status !== "success" && tx.credited !== true) {
+          tx.status = "cancelled";
+          tx.cancelled = true;
+          tx.updatedAt = new Date().toISOString();
+          modified = true;
+        }
+      }
+    }
+    if (modified) {
+      try {
+        fs.writeFileSync(TX_STORE_FILE, JSON.stringify(localList, null, 2), "utf8");
+      } catch (e) {}
+    }
+
+    // 2. Update Firestore if accessible
+    (async () => {
+      try {
+        const adminApp = getFirebaseAdmin();
+        if (adminApp) {
+          const db = adminApp.firestore();
+          const cancelPayload = { status: "cancelled", cancelled: true, updatedAt: new Date().toISOString() };
+          await Promise.allSettled([
+            db.collection("deposits").doc(targetId).set(cancelPayload, { merge: true }),
+            db.collection("transactions").doc(targetId).set(cancelPayload, { merge: true }),
+            uid ? db.collection("users").doc(uid).collection("history").doc(targetId).set(cancelPayload, { merge: true }) : Promise.resolve()
+          ]);
+        }
+      } catch (fbErr: any) {}
+    })();
+
+    return res.json({ success: true, status: "cancelled", id: targetId });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -541,11 +596,40 @@ app.get("/api/user-transactions", async (req, res) => {
         });
       }
     }
-    const merged = Array.from(map.values()).sort((a, b) => {
+
+    // Auto-cancel deposits older than 60 minutes so they never remain pending in history
+    const autoCancelCutoff = Date.now() - 60 * 60 * 1000;
+    let localModified = false;
+    const localListAll = getLocalTransactions();
+
+    const merged = Array.from(map.values()).map(tx => {
+      const isDeposit = tx.type === "deposit" || !!tx.depositNo || String(tx.id).startsWith("ORD") || String(tx.id).startsWith("dep");
+      const isApproved = tx.status === "approved" || tx.status === "success" || tx.credited === true;
+      const txTime = new Date(tx.timestamp || tx.createdAt || 0).getTime();
+      if (isDeposit && !isApproved && tx.status === "pending" && txTime > 0 && txTime < autoCancelCutoff) {
+        tx.status = "cancelled";
+        tx.cancelled = true;
+        const matchedLocal = localListAll.find((l: any) => (l.id === tx.id || l.order_no === tx.id));
+        if (matchedLocal && matchedLocal.status !== "approved" && matchedLocal.status !== "success" && matchedLocal.credited !== true) {
+          matchedLocal.status = "cancelled";
+          matchedLocal.cancelled = true;
+          matchedLocal.updatedAt = new Date().toISOString();
+          localModified = true;
+        }
+      }
+      return tx;
+    }).sort((a, b) => {
       const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
       const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
       return timeB - timeA;
     });
+
+    if (localModified) {
+      try {
+        fs.writeFileSync(TX_STORE_FILE, JSON.stringify(localListAll, null, 2), "utf8");
+      } catch (e) {}
+    }
+
     return res.json({ transactions: merged });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -1951,20 +2035,23 @@ async function startServer() {
     res.sendFile(indexPath);
   });
 
-  // Auto-cancel deposits older than 7 minutes (Runs every 3 minutes to optimize quota)
-  cron.schedule('*/3 * * * *', async () => {
-    console.log('[Cron] Running auto-cancel check for pending deposits');
-    const sevenMinutesAgo = new Date(Date.now() - 7 * 60 * 1000).toISOString();
+  // Auto-cancel deposits older than 60 minutes (Runs every 5 minutes to optimize quota)
+  cron.schedule('*/5 * * * *', async () => {
+    console.log('[Cron] Running auto-cancel check for pending deposits older than 60 minutes');
+    const sixtyMinutesAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
     // 1. Process local storage transactions auto-cancel
     try {
       const localList = getLocalTransactions();
       let modified = false;
+      const cutoff = Date.now() - 60 * 60 * 1000;
       for (const tx of localList) {
-        if (tx.type === "deposit" && tx.status === "pending") {
+        if (tx.type === "deposit" && (tx.status === "pending" || !tx.status)) {
           const tIso = tx.timestamp || tx.createdAt || "";
-          if (tIso && tIso < sevenMinutesAgo) {
+          const tMillis = new Date(tIso).getTime();
+          if (tMillis > 0 && tMillis < cutoff) {
             tx.status = "cancelled";
+            tx.cancelled = true;
             tx.updatedAt = new Date().toISOString();
             modified = true;
           }
@@ -1985,33 +2072,34 @@ async function startServer() {
             .where('status', '==', 'pending')
             .get();
         
+        const cutoff = Date.now() - 60 * 60 * 1000;
         for (const doc of pendingDeposits.docs) {
             const data = doc.data();
-            let createdDate = data.timestamp;
-            if (createdDate && typeof createdDate.toDate === 'function') {
-                createdDate = createdDate.toDate().toISOString();
-            } else if (createdDate && typeof createdDate === 'string') {
-                // Already string, nothing to do
-            } else {
-                continue;
+            let createdMillis = 0;
+            if (data.timestamp && typeof data.timestamp.toDate === 'function') {
+                createdMillis = data.timestamp.toDate().getTime();
+            } else if (data.timestamp) {
+                createdMillis = new Date(data.timestamp).getTime();
+            } else if (data.createdAt) {
+                createdMillis = new Date(data.createdAt).getTime();
             }
             
-            if (createdDate && createdDate < sevenMinutesAgo) {
+            if (createdMillis > 0 && createdMillis < cutoff) {
                 const depositId = doc.id;
                 const uid = data.uid;
 
                 // 1. Update deposits document
-                await doc.ref.update({ status: 'cancelled' }).catch(() => {});
+                await doc.ref.update({ status: 'cancelled', cancelled: true, updatedAt: new Date().toISOString() }).catch(() => {});
 
                 // 2. Update transactions document
                 try {
-                    await db.collection('transactions').doc(depositId).update({ status: 'cancelled' }).catch(() => {});
+                    await db.collection('transactions').doc(depositId).update({ status: 'cancelled', cancelled: true, updatedAt: new Date().toISOString() }).catch(() => {});
                 } catch (txErr: any) {}
 
                 // 3. Update users/{uid}/history/{depositId} document if uid exists
                 if (uid) {
                     try {
-                        await db.collection('users').doc(uid).collection('history').doc(depositId).update({ status: 'cancelled' }).catch(() => {});
+                        await db.collection('users').doc(uid).collection('history').doc(depositId).update({ status: 'cancelled', cancelled: true, updatedAt: new Date().toISOString() }).catch(() => {});
                     } catch (histErr: any) {}
                 }
             }
