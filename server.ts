@@ -24,6 +24,56 @@ app.use((req, res, next) => {
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(express.text({ type: ["text/*", "application/*"] }));
+app.use((req, _res, next) => {
+  if (typeof req.body === "string" && req.body.trim().startsWith("{")) {
+    try {
+      req.body = JSON.parse(req.body);
+    } catch (e) {}
+  }
+  next();
+});
+
+// Circuit breaker for Firestore quota exhaustion to prevent hanging requests
+let firestoreQuotaExceededUntil = 0;
+
+async function getFirestoreDepositsSafe(adminApp: any) {
+  if (Date.now() < firestoreQuotaExceededUntil) {
+    return [];
+  }
+  try {
+    const depSnap = await Promise.race([
+      adminApp.firestore().collection("deposits").limit(100).get(),
+      new Promise<any>((_, reject) => setTimeout(() => reject(new Error("firestore timeout")), 800))
+    ]);
+    return depSnap?.docs?.map((d: any) => ({ id: d.id, order_no: d.id, ...d.data() })) || [];
+  } catch (err: any) {
+    if (err?.message?.includes("Quota exceeded") || err?.code === 8 || err?.message?.includes("RESOURCE_EXHAUSTED")) {
+      console.warn("Firestore quota exceeded on deposits, activating circuit breaker for 60s");
+      firestoreQuotaExceededUntil = Date.now() + 60000;
+    }
+    return [];
+  }
+}
+
+async function getFirestoreWithdrawalsSafe(adminApp: any) {
+  if (Date.now() < firestoreQuotaExceededUntil) {
+    return [];
+  }
+  try {
+    const wthSnap = await Promise.race([
+      adminApp.firestore().collection("withdrawals").limit(100).get(),
+      new Promise<any>((_, reject) => setTimeout(() => reject(new Error("firestore timeout")), 800))
+    ]);
+    return wthSnap?.docs?.map((d: any) => ({ id: d.id, withdrawNo: d.id, ...d.data() })) || [];
+  } catch (err: any) {
+    if (err?.message?.includes("Quota exceeded") || err?.code === 8 || err?.message?.includes("RESOURCE_EXHAUSTED")) {
+      console.warn("Firestore quota exceeded on withdrawals, activating circuit breaker for 60s");
+      firestoreQuotaExceededUntil = Date.now() + 60000;
+    }
+    return [];
+  }
+}
 
 // Firebase Admin initialization (lazy)
 function getFirebaseAdmin() {
@@ -289,7 +339,12 @@ setTimeout(() => {
 // Endpoint to record transaction persistently
 app.post("/api/record-transaction", async (req, res) => {
   try {
-    const tx = req.body;
+    let tx = req.body;
+    if (typeof tx === "string") {
+      try {
+        tx = JSON.parse(tx);
+      } catch (e) {}
+    }
     if (!tx || !tx.uid) {
       return res.status(400).json({ error: "Missing tx data or uid" });
     }
@@ -332,34 +387,35 @@ app.post("/api/record-transaction", async (req, res) => {
     }
 
     saveLocalTransaction(safeTx);
+    console.log(`[RECORD-TRANSACTION SAVED] type=${safeTx.type} id=${safeTx.id} amount=${safeTx.amount} user=${safeTx.username} status=${safeTx.status}`);
 
     // Asynchronously sync to Firestore if admin app exists without blocking response
     (async () => {
       try {
         const adminApp = getFirebaseAdmin();
-        if (adminApp) {
+        if (adminApp && Date.now() >= firestoreQuotaExceededUntil) {
           const db = adminApp.firestore();
           if (safeTx.type === "deposit") {
             const depRef = db.collection("deposits").doc(String(docId));
             await Promise.race([
               depRef.set(safeTx, { merge: true }),
-              new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 2500))
+              new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
             ]).catch(() => {});
           } else if (safeTx.type === "withdraw") {
             await Promise.race([
               db.collection("withdrawals").doc(String(docId)).set(safeTx, { merge: true }),
-              new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 2500))
+              new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
             ]).catch(() => {});
           }
           await Promise.race([
             db.collection("transactions").doc(String(docId)).set(safeTx, { merge: true }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 2500))
+            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
           ]).catch(() => {});
         }
       } catch (fbErr: any) {}
     })();
 
-    return res.json({ success: true, status: safeTx.status });
+    return res.json({ success: true, status: safeTx.status, id: docId });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -426,14 +482,7 @@ app.get("/api/admin/all-withdrawals", async (req, res) => {
     try {
       const adminApp = getFirebaseAdmin();
       if (adminApp) {
-        const wthSnap = await adminApp.firestore().collection("withdrawals").limit(200).get().catch(() => ({ docs: [] }));
-        wthSnap.docs.forEach((d: any) => {
-          firestoreList.push({
-            id: d.id,
-            withdrawNo: d.id,
-            ...d.data()
-          });
-        });
+        firestoreList = await getFirestoreWithdrawalsSafe(adminApp);
       }
     } catch (fbErr: any) {}
 
@@ -472,14 +521,7 @@ app.get("/api/admin/all-deposits", async (req, res) => {
     try {
       const adminApp = getFirebaseAdmin();
       if (adminApp) {
-        const depSnap = await adminApp.firestore().collection("deposits").limit(200).get().catch(() => ({ docs: [] }));
-        depSnap.docs.forEach((d: any) => {
-          firestoreList.push({
-            id: d.id,
-            order_no: d.id,
-            ...d.data()
-          });
-        });
+        firestoreList = await getFirestoreDepositsSafe(adminApp);
       }
     } catch (e) {}
 
@@ -508,6 +550,161 @@ app.get("/api/admin/all-deposits", async (req, res) => {
       return tb - ta;
     });
     return res.json({ success: true, deposits });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Live User Presence tracking
+interface UserPresenceRecord {
+  uid: string;
+  username: string;
+  lastActiveTime: number;
+  isOnline: boolean;
+  deviceId?: string;
+  deviceInfo?: string;
+  phone?: string;
+  balance?: string | number;
+}
+const onlineUsersTracker = new Map<string, UserPresenceRecord>();
+
+function getOnlineUsersCount(): number {
+  const now = Date.now();
+  let count = 0;
+  for (const [uid, user] of onlineUsersTracker.entries()) {
+    if (user.isOnline && now - user.lastActiveTime < 150000) {
+      count++;
+    } else if (now - user.lastActiveTime >= 300000) {
+      onlineUsersTracker.delete(uid);
+    }
+  }
+  return count;
+}
+
+app.post("/api/user-presence", async (req, res) => {
+  try {
+    const { uid, username, isOnline, lastActiveTime, deviceId, deviceInfo, phone, balance } = req.body || {};
+    if (!uid) return res.json({ success: false, error: "Missing uid" });
+
+    const now = lastActiveTime ? Number(lastActiveTime) : Date.now();
+    const online = isOnline !== false;
+
+    const existing = onlineUsersTracker.get(uid) || { uid, username: "User", lastActiveTime: 0, isOnline: false };
+    onlineUsersTracker.set(uid, {
+      ...existing,
+      uid,
+      username: username || existing.username || "User",
+      lastActiveTime: now,
+      isOnline: online,
+      ...(deviceId ? { deviceId } : {}),
+      ...(deviceInfo ? { deviceInfo } : {}),
+      ...(phone ? { phone } : {}),
+      ...(balance !== undefined ? { balance } : {})
+    });
+
+    const adminApp = getFirebaseAdmin();
+    if (adminApp) {
+      adminApp.firestore().collection("users").doc(uid).set({
+        isOnline: online,
+        lastActive: new Date(now).toISOString(),
+        lastActiveTime: now,
+        ...(deviceInfo ? { deviceInfo } : {}),
+        ...(deviceId ? { deviceId } : {})
+      }, { merge: true }).catch(() => {});
+    }
+
+    return res.json({
+      success: true,
+      uid,
+      isOnline: online,
+      onlineCount: getOnlineUsersCount()
+    });
+  } catch (e: any) {
+    return res.json({ success: false, error: e.message });
+  }
+});
+
+let cachedUsersList: any[] = [];
+let lastUsersFetch = 0;
+
+app.get("/api/admin/all-users", async (req, res) => {
+  try {
+    const now = Date.now();
+    const adminApp = getFirebaseAdmin();
+    if (!adminApp) {
+      return res.json({ success: true, users: cachedUsersList, onlineCount: getOnlineUsersCount() });
+    }
+
+    if (now - lastUsersFetch > 3000 || cachedUsersList.length === 0) {
+      if (now >= firestoreQuotaExceededUntil) {
+        try {
+          const snap = await Promise.race([
+            adminApp.firestore().collection("users").limit(300).get(),
+            new Promise<any>((_, reject) => setTimeout(() => reject(new Error("firestore timeout")), 1200))
+          ]);
+          if (snap && snap.docs) {
+            cachedUsersList = snap.docs.map((d: any) => ({ id: d.id, uid: d.id, ...d.data() }));
+            lastUsersFetch = now;
+          }
+        } catch (err: any) {
+          if (err?.message?.includes("Quota exceeded") || err?.code === 8 || err?.message?.includes("RESOURCE_EXHAUSTED")) {
+            firestoreQuotaExceededUntil = Date.now() + 60000;
+          }
+        }
+      }
+    }
+
+    const usersMap = new Map<string, any>();
+    cachedUsersList.forEach(u => usersMap.set(u.id || u.uid, { ...u }));
+
+    for (const [uid, track] of onlineUsersTracker.entries()) {
+      if (!usersMap.has(uid)) {
+        usersMap.set(uid, {
+          id: uid,
+          uid,
+          username: track.username || "User",
+          phone: track.phone || "",
+          deviceInfo: track.deviceInfo || "",
+          lastActiveTime: track.lastActiveTime,
+          isOnline: track.isOnline
+        });
+      }
+    }
+
+    const mergedUsers = Array.from(usersMap.values()).map(u => {
+      const track = onlineUsersTracker.get(u.id || u.uid);
+      let lastActiveTime = u.lastActiveTime;
+      if (!lastActiveTime && u.lastActive) {
+        lastActiveTime = u.lastActive.toDate ? u.lastActive.toDate().getTime() : new Date(u.lastActive).getTime();
+      }
+      if (track && track.lastActiveTime > (lastActiveTime || 0)) {
+        lastActiveTime = track.lastActiveTime;
+      }
+
+      const isOnline = (track && track.isOnline && (now - track.lastActiveTime < 150000)) ||
+                       (u.isOnline !== false && lastActiveTime && (now - lastActiveTime < 150000));
+
+      return {
+        ...u,
+        lastActiveTime: lastActiveTime || 0,
+        isOnline: !!isOnline
+      };
+    });
+
+    mergedUsers.sort((a, b) => {
+      if (a.isOnline && !b.isOnline) return -1;
+      if (!a.isOnline && b.isOnline) return 1;
+      const tA = a.registrationDate ? new Date(a.registrationDate).getTime() : (a.lastActiveTime || 0);
+      const tB = b.registrationDate ? new Date(b.registrationDate).getTime() : (b.lastActiveTime || 0);
+      return tB - tA;
+    });
+
+    return res.json({
+      success: true,
+      users: mergedUsers,
+      total: mergedUsers.length,
+      onlineCount: mergedUsers.filter(u => u.isOnline).length
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
