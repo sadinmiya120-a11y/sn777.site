@@ -10,17 +10,7 @@ for (const file of files) {
   let code = fs.readFileSync(file, "utf8");
   let modified = false;
 
-  // 1. In real-time snapshot listener:
-  const t1 = "if(diff>0){const sMsg = `🎉 পেমেন্ট সফল হয়েছে! ৳${diff} টাকা একাউন্টে যোগ করা হয়েছে।`; sr(sMsg); try{localStorage.setItem(\"sn777_persist_success\", sMsg);}catch(e){} Er(!0);";
-  const r1 = "if(diff>0){const _isBonus=window.__sn777_just_signed_up||((!Ue.totalDeposited||Number(Ue.totalDeposited)===0)&&(!Ue.approvedDepositsCount||Number(Ue.approvedDepositsCount)===0)&&(diff===777||curBal===777));const sMsg=_isBonus?`🎉 আপনাকে অভিনন্দন আপনি বোনাস পেয়েছেন! ৳${diff} টাকা একাউন্টে যোগ করা হয়েছে。`:`🎉 পেমেন্ট সফল হয়েছে! ৳${diff} টাকা একাউন্টে যোগ করা হয়েছে।`;sr(sMsg);try{localStorage.setItem(\"sn777_persist_success\",sMsg);}catch(e){}Er(!0);";
-
-  if (code.includes(t1)) {
-    code = code.replace(t1, r1);
-    modified = true;
-    console.log(`[${file}] Patched snapshot listener to display registration bonus message`);
-  } else {
-    console.warn(`[${file}] Target 1 not found (maybe already patched)`);
-  }
+  // Registration handler and modal heading only (snapshot listener diff is handled by patch_fix_double_deposit_message.cjs)
 
   // 2. In registration handler:
   const t2 = "await Ks(We(Ie,\"users\",Vg.uid),Rf);const Le=parseInt(on.getItem(\"sn777_created_accounts_count\")||\"0\",10);const kf=Le+1;on.setItem(\"sn777_created_accounts_count\",kf.toString()),ss(Rf),xe(!1),H(\"home\");";

@@ -10,17 +10,7 @@ for (const file of files) {
   let code = fs.readFileSync(file, "utf8");
   let modified = false;
 
-  // 1. In snapshot listener:
-  const tSnap = "if(diff>0){const _isBonus=window.__sn777_just_signed_up||((!Ue.totalDeposited||Number(Ue.totalDeposited)===0)&&(!Ue.approvedDepositsCount||Number(Ue.approvedDepositsCount)===0)&&(diff===777||curBal===777));const sMsg=_isBonus?`🎉 আপনাকে অভিনন্দন আপনি বোনাস পেয়েছেন! ৳${diff} টাকা একাউন্টে যোগ করা হয়েছে。`:`🎉 পেমেন্ট সফল হয়েছে! ৳${diff} টাকা একাউন্টে যোগ করা হয়েছে।`;sr(sMsg);try{localStorage.setItem(\"sn777_persist_success\",sMsg);}catch(e){}Er(!0);";
-  const rSnap = "if(diff>0){const _isPromo=window.__sn777_just_redeemed_promo||(diff===250&&Ue.promoRedeemed);const _isVoucher=window.__sn777_just_redeemed_voucher||((diff===500||diff===1011)&&(Ue.voucherRedeemed||Ue.voucherVipRedeemed));const _isBonus=window.__sn777_just_signed_up||((!Ue.totalDeposited||Number(Ue.totalDeposited)===0)&&(!Ue.approvedDepositsCount||Number(Ue.approvedDepositsCount)===0)&&(diff===777||curBal===777));const sMsg=_isPromo?`🎉 অভিনন্দন! প্রোমো কোড সফল হয়েছে! ৳${diff} টাকা বোনাস একাউন্টে যোগ করা হয়েছে。`:_isVoucher?`🎉 অভিনন্দন! ভাউচার কোড সফল হয়েছে! ৳${diff} টাকা বোনাস একাউন্টে যোগ করা হয়েছে。`:_isBonus?`🎉 আপনাকে অভিনন্দন আপনি বোনাস পেয়েছেন! ৳${diff} টাকা একাউন্টে যোগ করা হয়েছে。`:`🎉 পেমেন্ট সফল হয়েছে! ৳${diff} টাকা একাউন্টে যোগ করা হয়েছে।`;sr(sMsg);try{localStorage.setItem(\"sn777_persist_success\",sMsg);}catch(e){}Er(!0);";
-
-  if (code.includes(tSnap)) {
-    code = code.replace(tSnap, rSnap);
-    modified = true;
-    console.log(`[${file}] Patched snapshot listener for promo/voucher/bonus distinction`);
-  } else {
-    console.warn(`[${file}] Target snapshot listener not found`);
-  }
+  // Promo and Voucher handlers and modal heading only (snapshot listener diff is handled by patch_fix_double_deposit_message.cjs)
 
   // 2. In Promo Code handler (Cc):
   const tPromo = "const ye=250,Le=(parseFloat(W.balance||\"0.00\")+ye).toFixed(2);await Tn(L,{balance:Le,promoRedeemed:!0});";
