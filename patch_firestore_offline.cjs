@@ -1,6 +1,5 @@
 const fs = require("fs");
 const esbuild = require("esbuild");
-
 const jsFiles = [
   "dist/assets/index-sn777-v5.js",
   "dist/assets/index-CUhzlpga-v3.js",
@@ -32,6 +31,14 @@ jsFiles.forEach(filePath => {
   if (code.includes(oldGn)) {
     code = code.replace(oldGn, newGn);
     console.log(`[${filePath}] Gn wrapped with offline fallback.`);
+  }
+
+  // Remove the specific annoying console log from firestore
+  const logStr = `this.la("Backend didn't respond within 10 seconds.")`;
+  const newLogStr = 'null';
+  if (code.includes(logStr)) {
+    code = code.replace(logStr, newLogStr);
+    console.log(`[${filePath}] Removed backend 10 seconds log.`);
   }
 
   try {
