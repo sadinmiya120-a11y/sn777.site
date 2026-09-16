@@ -12,6 +12,22 @@ import cron from 'node-cron';
 import multer from "multer";
 const upload = multer();
 
+import {
+  parseSms,
+  getSmsSettings,
+  saveSmsSettings,
+  getSmsLogs,
+  saveSmsLog,
+  getVerifiedSmsPool,
+  addToVerifiedPool,
+  findMatchingSmsInPool,
+  claimPoolSms,
+  type ParsedSms,
+  type SmsLog,
+  type VerifiedSmsPoolItem,
+  type SmsSettings
+} from "./sms_verifier";
+
 // Create server
 const app = express();
 const PORT = 3000;
@@ -379,10 +395,25 @@ app.post("/api/record-transaction", async (req, res) => {
       if (reqStatus === "cancelled" || reqStatus === "rejected" || reqStatus === "failed") {
         safeTx.status = "cancelled";
         safeTx.cancelled = true;
-      } else if (!existing || existing.status !== "approved") {
-        safeTx.status = "pending";
+      } else if (existing && existing.status === "approved") {
+        safeTx.status = "approved";
+        safeTx.credited = true;
       } else {
-        safeTx.status = existing.status;
+        safeTx.status = "pending";
+        // Check if verified SMS already arrived in verified_sms_pool
+        if (safeTx.transactionId) {
+          const candidateTrxId = String(safeTx.transactionId).toUpperCase().trim();
+          const matchedSms = findMatchingSmsInPool(candidateTrxId, safeTx.amount);
+          if (matchedSms && !matchedSms.claimed) {
+            console.log(`[RECORD-TRANSACTION] Matched verified SMS in pool for ${candidateTrxId}! Auto-approving immediately!`);
+            safeTx.status = "approved";
+            safeTx.credited = true;
+            safeTx.amount = matchedSms.amount || safeTx.amount;
+            safeTx.finalCredit = safeTx.finalCredit || safeTx.amount;
+            claimPoolSms(candidateTrxId, String(docId), safeTx.uid);
+            await approveAndCreditDeposit(String(docId), matchedSms.amount || safeTx.amount, safeTx.uid);
+          }
+        }
       }
     }
 
@@ -1446,14 +1477,589 @@ async function approveAndCreditDeposit(orderNoInput: string, paidAmountOverride?
   return updatedLocal;
 }
 
+// ==========================================
+// AUTOMATED SMS VERIFICATION & DEPOSIT MATCHING ENGINE
+// ==========================================
+async function handleIncomingSmsPayload(payload: any) {
+  const settings = getSmsSettings();
+  if (!settings.enabled) {
+    return { success: false, status: "disabled", message: "এসএমএস অটো-ভেরিফিকেশন সার্ভিস সাময়িকভাবে বন্ধ আছে।" };
+  }
+
+  const secret = payload.secret || payload.token || payload.apiKey || payload.key || "";
+  if (settings.secretKey && secret && secret !== settings.secretKey) {
+    return { success: false, status: "unauthorized", message: "ভুল সিক্রেট কি (Invalid Secret Key)!" };
+  }
+
+  let rawMessage = String(payload.message || payload.body || payload.text || payload.msg || payload.sms || payload.content || "").trim();
+  let senderHint = String(payload.sender || payload.from || payload.address || payload.provider || "").trim();
+
+  if (!rawMessage && typeof payload === "string") {
+    rawMessage = payload.trim();
+  }
+
+  // Parse SMS using intelligent Bangladeshi MFS Parser
+  let parsed = parseSms(rawMessage, senderHint);
+
+  // If direct fields were supplied
+  if ((!parsed || !parsed.trxId) && (payload.trxId || payload.transactionId || payload.order_no)) {
+    const directTrx = String(payload.trxId || payload.transactionId || payload.order_no || "").trim().toUpperCase();
+    const directAmt = parseFloat(String(payload.amount || payload.money || "0").replace(/,/g, ""));
+    if (directTrx) {
+      parsed = {
+        provider: (payload.provider as any) || parsed?.provider || "unknown",
+        trxId: directTrx,
+        amount: directAmt > 0 ? directAmt : (parsed?.amount || null),
+        senderPhone: payload.senderPhone || payload.phone || parsed?.senderPhone || null,
+        raw: rawMessage || `Direct: TrxID ${directTrx} Amount ৳${directAmt}`,
+        senderHint: senderHint,
+        detectedAt: new Date().toISOString()
+      };
+    }
+  }
+
+  if (!parsed || !parsed.trxId || !parsed.amount) {
+    const logItem: SmsLog = {
+      id: "sms_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+      rawText: rawMessage || JSON.stringify(payload),
+      sender: senderHint,
+      provider: parsed?.provider || "unknown",
+      trxId: parsed?.trxId || null,
+      amount: parsed?.amount || null,
+      senderPhone: parsed?.senderPhone || null,
+      receivedAt: new Date().toISOString(),
+      matched: false,
+      autoApproved: false,
+      status: "unparsed",
+      note: "এসএমএস থেকে TrxID অথবা টাকার পরিমাণ শনাক্ত করা যায়নি।"
+    };
+    saveSmsLog(logItem);
+    return {
+      success: false,
+      status: "unparsed",
+      message: "এসএমএস থেকে TrxID অথবা টাকার পরিমাণ শনাক্ত করা যায়নি। অনুগ্রহ করে সঠিক বিকাশ/নগদ/রকেট মেসেজ দিন।",
+      parsed
+    };
+  }
+
+  const cleanTrxId = parsed.trxId.toUpperCase().trim();
+  const paidAmount = parsed.amount;
+
+  // Check if this TrxID was already approved/credited
+  const localList = getLocalTransactions();
+  const alreadyApproved = localList.find((t: any) =>
+    (String(t.transactionId || "").toUpperCase() === cleanTrxId || String(t.order_no || "").toUpperCase() === cleanTrxId) &&
+    (t.status === "approved" || t.credited === true)
+  );
+
+  if (alreadyApproved) {
+    const logItem: SmsLog = {
+      id: "sms_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+      rawText: rawMessage,
+      sender: senderHint,
+      provider: parsed.provider,
+      trxId: cleanTrxId,
+      amount: paidAmount,
+      senderPhone: parsed.senderPhone,
+      receivedAt: new Date().toISOString(),
+      matched: true,
+      matchedOrderNo: alreadyApproved.order_no || alreadyApproved.id,
+      matchedUid: alreadyApproved.uid,
+      autoApproved: false,
+      status: "already_used",
+      note: "এই TrxID ইতিমধ্যেই অনুমোদিত হয়েছে এবং একাউন্টে ব্যালেন্স যোগ হয়েছে।"
+    };
+    saveSmsLog(logItem);
+    return {
+      success: true,
+      status: "already_used",
+      message: "এই ট্রানজ্যাকশন আইডি ইতিমধ্যেই ব্যবহৃত ও অনুমোদিত হয়েছে।",
+      trxId: cleanTrxId,
+      amount: paidAmount,
+      order_no: alreadyApproved.order_no || alreadyApproved.id
+    };
+  }
+
+  // 1. Check if user already submitted a pending deposit
+  let pendingTx = localList.find((t: any) =>
+    (t.status === "pending" || t.status === "processing") &&
+    (String(t.transactionId || "").toUpperCase() === cleanTrxId ||
+     String(t.order_no || "").toUpperCase() === cleanTrxId ||
+     String(t.id || "").toUpperCase() === cleanTrxId)
+  );
+
+  // 2. Query Firestore deposits if not in local store
+  if (!pendingTx) {
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp && Date.now() >= firestoreQuotaExceededUntil) {
+        const db = adminApp.firestore();
+        const snap = await Promise.race([
+          db.collection("deposits")
+            .where("transactionId", "==", cleanTrxId)
+            .where("status", "==", "pending")
+            .limit(1)
+            .get(),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
+        ]).catch(() => null);
+
+        if (snap && !snap.empty) {
+          pendingTx = snap.docs[0].data();
+        }
+      }
+    } catch (dbErr) {
+      console.warn("[handleIncomingSmsPayload] Firestore query warning:", dbErr);
+    }
+  }
+
+  // MATCH FOUND: Auto-Approve user deposit instantly!
+  if (pendingTx && settings.autoApprove) {
+    const targetOrderNo = pendingTx.order_no || pendingTx.id;
+    const uid = pendingTx.uid;
+
+    await approveAndCreditDeposit(targetOrderNo, paidAmount, uid);
+
+    addToVerifiedPool({
+      trxId: cleanTrxId,
+      amount: paidAmount,
+      provider: parsed.provider,
+      senderPhone: parsed.senderPhone,
+      rawText: rawMessage,
+      receivedAt: new Date().toISOString()
+    });
+    claimPoolSms(cleanTrxId, targetOrderNo, uid);
+
+    const logItem: SmsLog = {
+      id: "sms_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+      rawText: rawMessage,
+      sender: senderHint,
+      provider: parsed.provider,
+      trxId: cleanTrxId,
+      amount: paidAmount,
+      senderPhone: parsed.senderPhone,
+      receivedAt: new Date().toISOString(),
+      matched: true,
+      matchedOrderNo: targetOrderNo,
+      matchedUid: uid,
+      autoApproved: true,
+      status: "auto_approved",
+      note: `অপেক্ষমান ডিপোজিট #${targetOrderNo} (${pendingTx.username || uid}) এর সাথে মিলে গেছে এবং তাৎক্ষণিক ৳${paidAmount} ক্রেডিট করা হয়েছে!`
+    };
+    saveSmsLog(logItem);
+
+    return {
+      success: true,
+      status: "auto_approved",
+      matched: true,
+      autoApproved: true,
+      order_no: targetOrderNo,
+      amount: paidAmount,
+      username: pendingTx.username,
+      message: `ডিপোজিট #${targetOrderNo} সফলভাবে ভেরিফাই ও ইউজার (${pendingTx.username || "User"}) একাউন্টে ৳${paidAmount} যোগ করা হয়েছে!`
+    };
+  }
+
+  // NO PENDING DEPOSIT YET: Store in verified pool
+  addToVerifiedPool({
+    trxId: cleanTrxId,
+    amount: paidAmount,
+    provider: parsed.provider,
+    senderPhone: parsed.senderPhone,
+    rawText: rawMessage,
+    receivedAt: new Date().toISOString()
+  });
+
+  const logItem: SmsLog = {
+    id: "sms_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+    rawText: rawMessage,
+    sender: senderHint,
+    provider: parsed.provider,
+    trxId: cleanTrxId,
+    amount: paidAmount,
+    senderPhone: parsed.senderPhone,
+    receivedAt: new Date().toISOString(),
+    matched: false,
+    autoApproved: false,
+    status: "waiting_for_user",
+    note: `ভেরিফাইড পুলে জমা রাখা হয়েছে। ইউজার এই TrxID (${cleanTrxId}) সাবমিট করলেই তাৎক্ষণিক স্বয়ংক্রিয়ভাবে ক্রেডিট হবে।`
+  };
+  saveSmsLog(logItem);
+
+  return {
+    success: true,
+    status: "waiting_for_user",
+    matched: false,
+    inPool: true,
+    trxId: cleanTrxId,
+    amount: paidAmount,
+    provider: parsed.provider,
+    message: `এসএমএস সফলভাবে গৃহীত হয়েছে (TrxID: ${cleanTrxId}, টাকা: ৳${paidAmount})। ইউজার সাবমিট করলেই ৫ সেকেন্ডের মধ্যে অটো-ক্রেডিট হবে।`
+  };
+}
+
+// SMS Webhook Routes (Supports POST & GET from Android SMS Forwarders)
+app.post(["/api/sms/webhook", "/api/sms/incoming"], async (req, res) => {
+  try {
+    const payload = { ...req.query, ...(typeof req.body === "object" ? req.body : { message: req.body }) };
+    const result = await handleIncomingSmsPayload(payload);
+    return res.json(result);
+  } catch (err: any) {
+    console.error("SMS Webhook POST error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get(["/api/sms/webhook", "/api/sms/incoming"], async (req, res) => {
+  try {
+    const payload = req.query;
+    const result = await handleIncomingSmsPayload(payload);
+    return res.json(result);
+  } catch (err: any) {
+    console.error("SMS Webhook GET error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin SMS Test Endpoint (Manual Paste & Auto-Approve)
+app.post("/api/admin/sms-test", async (req, res) => {
+  try {
+    const { message, sender } = req.body;
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ success: false, error: "মেসেজ লিখুন বা পেস্ট করুন।" });
+    }
+    const result = await handleIncomingSmsPayload({ message, sender: sender || "bKash" });
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin SMS Logs & Pool Endpoint
+app.get("/api/admin/sms-logs", (req, res) => {
+  const logs = getSmsLogs();
+  const pool = getVerifiedSmsPool();
+  const settings = getSmsSettings();
+  res.json({
+    success: true,
+    settings,
+    poolCount: pool.filter((x) => !x.claimed).length,
+    totalLogs: logs.length,
+    logs: logs.slice(0, 100),
+    pool: pool.slice(0, 50)
+  });
+});
+
+// Admin SMS Settings Update
+app.post("/api/admin/sms-settings", (req, res) => {
+  const updated = saveSmsSettings(req.body);
+  res.json({ success: true, settings: updated, message: "এসএমএস সেটিংস সংরক্ষিত হয়েছে।" });
+});
+
+// Admin SMS Instructions & Configuration
+app.get("/api/admin/sms-instructions", (req, res) => {
+  const settings = getSmsSettings();
+  const host = req.get("host") || "sn777.site";
+  const protocol = req.protocol === "https" || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+  const baseUrl = `${protocol}://${host}`;
+  const webhookUrl = `${baseUrl}/api/sms/webhook?secret=${settings.secretKey}`;
+
+  res.json({
+    success: true,
+    webhookUrl,
+    method: "POST or GET",
+    supportedApps: [
+      { name: "SMS Forwarder", playStoreUrl: "https://play.google.com/store/apps/details?id=com.lanrenshen.smsforwarder" },
+      { name: "MacroDroid", playStoreUrl: "https://play.google.com/store/apps/details?id=com.arlosoft.macrodroid" },
+      { name: "Tasker", playStoreUrl: "https://play.google.com/store/apps/details?id=net.dinglisch.android.taskerm" }
+    ],
+    supportedFilters: ["bKash", "16247", "Nagad", "16167", "Rocket", "16216", "Upay"],
+    sampleFormat: {
+      postJson: { sender: "bKash", message: "You have received Tk 500.00 from 017xxxxxxxx. Ref . Fee Tk 0.00. Balance Tk 15,200.00. TrxID 9K38LS92 at 15/09/2026 21:05" },
+      getQuery: `${webhookUrl}&sender=%from&message=%body`
+    }
+  });
+});
+
+// Dedicated HTML Web Dashboard for SMS Automation
+app.get(["/admin/sms", "/sms-admin"], (req, res) => {
+  const settings = getSmsSettings();
+  const host = req.get("host") || "sn777.site";
+  const protocol = req.protocol === "https" || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+  const baseUrl = `${protocol}://${host}`;
+  const webhookUrl = `${baseUrl}/api/sms/webhook?secret=${settings.secretKey}`;
+
+  const html = `<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SN777 - অটোমেটিক এসএমএস ডিপোজিট ভেরিফিকেশন</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body { background-color: #0b1120; font-family: system-ui, -apple-system, sans-serif; color: #f1f5f9; }
+    .glass-card { background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.08); backdrop-filter: blur(12px); border-radius: 1rem; }
+  </style>
+</head>
+<body class="min-h-screen p-3 md:p-6 pb-20">
+  <div class="max-w-5xl mx-auto space-y-6">
+    <!-- Header -->
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 glass-card p-5">
+      <div class="flex items-center gap-3">
+        <div class="w-12 h-12 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 text-2xl">
+          <i class="fa-solid fa-mobile-screen-button"></i>
+        </div>
+        <div>
+          <h1 class="text-xl md:text-2xl font-black text-white flex items-center gap-2">
+            অটো এসএমএস ডিপোজিট ভেরিফিকেশন
+            <span class="text-xs bg-emerald-500/20 text-emerald-400 px-2.5 py-0.5 rounded-full font-bold border border-emerald-500/30">সচল</span>
+          </h1>
+          <p class="text-xs text-slate-400 mt-0.5">পার্সোনাল বিকাশ, নগদ ও রকেটে এসএমএস আসলে ইনস্ট্যান্ট অটো ভেরিফাই</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <a href="/" class="bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-all border border-slate-700 flex items-center gap-2">
+          <i class="fa-solid fa-arrow-left"></i> গেমে ফিরুন
+        </a>
+      </div>
+    </div>
+
+    <!-- Quick Stats -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="glass-card p-4 text-center">
+        <span class="text-xs text-slate-400 font-bold block mb-1">মোট প্রাপ্ত SMS</span>
+        <span id="stat-total" class="text-2xl md:text-3xl font-black text-white">0</span>
+      </div>
+      <div class="glass-card p-4 text-center">
+        <span class="text-xs text-emerald-400 font-bold block mb-1">অটো-অ্যাপ্রুভড</span>
+        <span id="stat-approved" class="text-2xl md:text-3xl font-black text-emerald-400">0</span>
+      </div>
+      <div class="glass-card p-4 text-center">
+        <span class="text-xs text-cyan-400 font-bold block mb-1">পুলে অপেক্ষমান</span>
+        <span id="stat-pool" class="text-2xl md:text-3xl font-black text-cyan-400">0</span>
+      </div>
+      <div class="glass-card p-4 text-center">
+        <span class="text-xs text-amber-400 font-bold block mb-1">অটো মোড</span>
+        <span id="stat-mode" class="text-sm md:text-base font-black text-amber-400">চালু (ON)</span>
+      </div>
+    </div>
+
+    <!-- Webhook URL & Android Setup -->
+    <div class="glass-card p-5 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h2 class="font-bold text-base text-white flex items-center gap-2">
+          <i class="fa-solid fa-link text-emerald-400"></i> আপনার এসএমএস ওয়েবহুক ইউআরএল (Webhook URL)
+        </h2>
+        <span class="text-xs text-slate-400">ফোনের অ্যাপে এই লিঙ্ক দিন</span>
+      </div>
+      <div class="flex flex-col md:flex-row gap-2">
+        <input id="webhook-url-input" type="text" readonly value="${webhookUrl}" class="flex-1 bg-slate-900 border border-slate-700 text-emerald-400 px-4 py-3 rounded-xl font-mono text-xs md:text-sm font-bold select-all focus:outline-none focus:border-emerald-500">
+        <button onclick="copyWebhookUrl()" id="copy-btn" class="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs md:text-sm px-6 py-3 rounded-xl transition-all shadow-lg active:scale-95 flex items-center justify-center gap-2">
+          <i class="fa-solid fa-copy"></i> কপি করুন
+        </button>
+      </div>
+      <div class="text-xs text-slate-400 bg-slate-900/60 p-3 rounded-xl border border-slate-800 space-y-1">
+        <p class="text-slate-300 font-bold"><i class="fa-solid fa-circle-info text-cyan-400 mr-1"></i> কীভাবে পার্সোনাল সিমে অটো এসএমএস সেটআপ করবেন:</p>
+        <p>১. আপনার যে ফোনে বিকাশ/নগদ সিমটি আছে, সেই ফোনে প্লে-স্টোর থেকে <b>"SMS Forwarder"</b> অথবা <b>"MacroDroid"</b> অ্যাপ ইন্সটল করুন।</p>
+        <p>২. অ্যাপে ফরওয়ার্ড অপশনে <b>Webhook (HTTP POST/GET)</b> সিলেক্ট করে উপরের ইউআরএলটি পেস্ট করুন।</p>
+        <p>৩. ফিল্টারে প্রেরক নাম দিন: <b>bKash, Nagad, 16247, 16167, Rocket</b>।</p>
+        <p>৪. ব্যস! এখন থেকে পার্সোনাল নাম্বারে টাকা আসামাত্রই ফোন স্বয়ংক্রিয়ভাবে মেসেজ পাঠিয়ে ইউজারের একাউন্টে ব্যালেন্স যোগ করে দেবে।</p>
+      </div>
+    </div>
+
+    <!-- Manual SMS Quick Paste Test -->
+    <div class="glass-card p-5 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h2 class="font-bold text-base text-white flex items-center gap-2">
+          <i class="fa-solid fa-bolt text-amber-400"></i> ম্যানুয়ালি SMS পেস্ট করে তাৎক্ষণিক অটো-অ্যাপ্রুভ
+        </h2>
+        <span class="text-xs text-slate-400">ফোন থেকে মেসেজ কপি করে এখানে দিন</span>
+      </div>
+      <div class="space-y-3">
+        <textarea id="manual-sms-text" rows="3" placeholder="উদাহরণ: You have received Tk 500.00 from 017xxxxxxxx. Ref . Fee Tk 0.00. Balance Tk 15,200.00. TrxID 9K38LS92 at 16/09/2026..." class="w-full bg-slate-900 border border-slate-700 text-white p-3 rounded-xl text-xs md:text-sm placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-all font-mono"></textarea>
+        <div class="flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-slate-400 font-bold">প্রোভাইডার:</span>
+            <select id="manual-sender-select" class="bg-slate-900 border border-slate-700 text-xs text-white rounded-lg px-2.5 py-1.5 focus:outline-none">
+              <option value="bKash">bKash (বিকাশ)</option>
+              <option value="Nagad">Nagad (নগদ)</option>
+              <option value="Rocket">Rocket (রকেট)</option>
+              <option value="Upay">Upay (উপায়)</option>
+            </select>
+          </div>
+          <button onclick="testManualSms()" id="test-btn" class="w-full sm:w-auto bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs md:text-sm px-6 py-2.5 rounded-xl transition-all shadow-lg active:scale-95 flex items-center justify-center gap-2">
+            <i class="fa-solid fa-check-double"></i> যাচাই ও অটো-অ্যাপ্রুভ করুন
+          </button>
+        </div>
+      </div>
+      <div id="test-result-box" class="hidden p-3 rounded-xl text-xs border font-mono"></div>
+    </div>
+
+    <!-- Live SMS Logs Feed -->
+    <div class="glass-card p-5 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h2 class="font-bold text-base text-white flex items-center gap-2">
+          <i class="fa-solid fa-list-check text-cyan-400"></i> লাইভ এসএমএস হিস্ট্রি ও ট্র্যাকিং
+        </h2>
+        <button onclick="loadLogs()" class="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-bold">
+          <i class="fa-solid fa-arrows-rotate"></i> রিফ্রেশ
+        </button>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead>
+            <tr class="border-b border-slate-800 text-slate-400 uppercase tracking-wider text-[11px]">
+              <th class="py-2.5 px-3">সময়</th>
+              <th class="py-2.5 px-3">প্রোভাইডার</th>
+              <th class="py-2.5 px-3">TrxID</th>
+              <th class="py-2.5 px-3">টাকার পরিমাণ</th>
+              <th class="py-2.5 px-3">প্রেরক ফোন</th>
+              <th class="py-2.5 px-3">স্ট্যাটাস</th>
+              <th class="py-2.5 px-3">অর্ডার / ইউজার</th>
+            </tr>
+          </thead>
+          <tbody id="logs-table-body" class="divide-y divide-slate-800/60 font-mono">
+            <tr>
+              <td colspan="7" class="py-6 text-center text-slate-500">ডাটা লোড হচ্ছে...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function copyWebhookUrl() {
+      const input = document.getElementById("webhook-url-input");
+      input.select();
+      navigator.clipboard.writeText(input.value);
+      const btn = document.getElementById("copy-btn");
+      const original = btn.innerHTML;
+      btn.innerHTML = '<i class="fa-solid fa-check"></i> কপি হয়েছে!';
+      btn.classList.replace("bg-emerald-600", "bg-green-600");
+      setTimeout(() => {
+        btn.innerHTML = original;
+        btn.classList.replace("bg-green-600", "bg-emerald-600");
+      }, 2000);
+    }
+
+    async function loadLogs() {
+      try {
+        const res = await fetch("/api/admin/sms-logs");
+        const data = await res.json();
+        if (!data.success) return;
+
+        // Stats
+        document.getElementById("stat-total").textContent = data.totalLogs || 0;
+        document.getElementById("stat-pool").textContent = data.poolCount || 0;
+        
+        const autoApprovedCount = (data.logs || []).filter(x => x.status === "auto_approved").length;
+        document.getElementById("stat-approved").textContent = autoApprovedCount;
+
+        const tbody = document.getElementById("logs-table-body");
+        if (!data.logs || data.logs.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" class="py-6 text-center text-slate-500">এখনো কোনো এসএমএস পাওয়া যায়নি। উপরে ম্যানুয়ালি পেস্ট করে টেস্ট করুন অথবা ফোনে ফরোয়ার্ডার সেট করুন।</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = data.logs.map(log => {
+          let badge = '';
+          if (log.status === 'auto_approved') {
+            badge = '<span class="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] font-bold">✓ অটো-অ্যাপ্রুভড</span>';
+          } else if (log.status === 'waiting_for_user') {
+            badge = '<span class="bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 px-2 py-0.5 rounded text-[10px] font-bold">⏳ পুলে জমা</span>';
+          } else if (log.status === 'already_used') {
+            badge = '<span class="bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded text-[10px] font-bold">ইতিমধ্যে ব্যবহৃত</span>';
+          } else {
+            badge = '<span class="bg-slate-500/20 text-slate-400 border border-slate-500/30 px-2 py-0.5 rounded text-[10px] font-bold">আনপার্সড</span>';
+          }
+
+          const providerColor = log.provider === 'bkash' ? 'text-pink-400' : (log.provider === 'nagad' ? 'text-amber-400' : 'text-purple-400');
+          const timeStr = log.receivedAt ? new Date(log.receivedAt).toLocaleTimeString('bn-BD', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-';
+
+          return \`<tr class="hover:bg-slate-800/40 transition-colors">
+            <td class="py-2.5 px-3 text-slate-400 text-[11px]">\${timeStr}</td>
+            <td class="py-2.5 px-3 font-bold uppercase \${providerColor}">\${log.provider || 'bKash'}</td>
+            <td class="py-2.5 px-3 text-white font-bold">\${log.trxId || '-'}</td>
+            <td class="py-2.5 px-3 text-emerald-400 font-bold">\${log.amount ? '৳ ' + log.amount : '-'}</td>
+            <td class="py-2.5 px-3 text-slate-300">\${log.senderPhone || '-'}</td>
+            <td class="py-2.5 px-3">\${badge}</td>
+            <td class="py-2.5 px-3 text-slate-300 text-[11px]">\${log.matchedOrderNo ? '#' + log.matchedOrderNo : (log.note || '-')}</td>
+          </tr>\`;
+        }).join('');
+      } catch (e) {
+        console.error("Error fetching SMS logs:", e);
+      }
+    }
+
+    async function testManualSms() {
+      const text = document.getElementById("manual-sms-text").value.trim();
+      const sender = document.getElementById("manual-sender-select").value;
+      const resultBox = document.getElementById("test-result-box");
+      const btn = document.getElementById("test-btn");
+
+      if (!text) {
+        alert("দয়া করে মেসেজের টেক্সট লিখুন বা পেস্ট করুন।");
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> যাচাই হচ্ছে...';
+
+      try {
+        const res = await fetch("/api/admin/sms-test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text, sender: sender })
+        });
+        const data = await res.json();
+
+        resultBox.classList.remove("hidden", "bg-emerald-950/60", "border-emerald-500/40", "text-emerald-300", "bg-red-950/60", "border-red-500/40", "text-red-300", "bg-cyan-950/60", "border-cyan-500/40", "text-cyan-300");
+
+        if (data.status === "auto_approved") {
+          resultBox.classList.add("bg-emerald-950/60", "border-emerald-500/40", "text-emerald-300");
+          resultBox.innerHTML = \`<p class="font-bold text-sm">✓ সফলভাবে অটো-অ্যাপ্রুভ হয়েছে!</p>
+            <p class="mt-1">অর্ডার নং: #\${data.order_no} | ইউজার: \${data.username || 'User'} | টাকার পরিমাণ: ৳\${data.amount}</p>\`;
+        } else if (data.status === "waiting_for_user") {
+          resultBox.classList.add("bg-cyan-950/60", "border-cyan-500/40", "text-cyan-300");
+          resultBox.innerHTML = \`<p class="font-bold text-sm">ℹ এসএমএস ভেরিফাইড পুলে জমা হয়েছে!</p>
+            <p class="mt-1">TrxID: <b>\${data.trxId}</b> | টাকা: <b>৳\${data.amount}</b></p>
+            <p class="text-slate-400 mt-1">ইউজার এই TrxID দিয়ে সাবমিট করলেই তার ব্যালেন্স সাথে সাথে যোগ হবে।</p>\`;
+        } else {
+          resultBox.classList.add("bg-amber-950/60", "border-amber-500/40", "text-amber-300");
+          resultBox.innerHTML = \`<p class="font-bold">\${data.message || 'মেসেজ প্রসেস হয়েছে'}</p>\`;
+        }
+
+        loadLogs();
+      } catch (err) {
+        resultBox.classList.remove("hidden");
+        resultBox.classList.add("bg-red-950/60", "border-red-500/40", "text-red-300");
+        resultBox.textContent = "ত্রুটি: " + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-check-double"></i> যাচাই ও অটো-অ্যাপ্রুভ করুন';
+      }
+    }
+
+    // Initial load & Polling
+    loadLogs();
+    setInterval(loadLogs, 5000);
+  </script>
+</body>
+</html>`;
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(html);
+});
+
 // Verify Payment Endpoint
 app.post("/api/verify-payment", async (req, res) => {
   try {
-    const { order_no } = req.body;
-    if (!order_no) {
-      return res.status(400).json({ error: "Missing order_no", success: false, status: "failed" });
+    const { order_no, transactionId } = req.body;
+    if (!order_no && !transactionId) {
+      return res.status(400).json({ error: "Missing order_no or transactionId", success: false, status: "failed" });
     }
-    const cleanOrderNo = String(order_no).trim();
+    const cleanOrderNo = String(order_no || transactionId).trim();
     let db = null;
     try {
       const adminApp = getFirebaseAdmin();
@@ -1462,22 +2068,44 @@ app.post("/api/verify-payment", async (req, res) => {
 
     let depositData: any = null;
     const localList = getLocalTransactions();
-    const localItem = localList.find((x: any) => (x.order_no === cleanOrderNo || x.id === cleanOrderNo || x.depositNo === cleanOrderNo));
+    const localItem = localList.find((x: any) => (
+      x.order_no === cleanOrderNo ||
+      x.id === cleanOrderNo ||
+      x.depositNo === cleanOrderNo ||
+      (transactionId && x.transactionId && String(x.transactionId).toUpperCase() === String(transactionId).toUpperCase())
+    ));
     if (localItem) {
       depositData = { ...localItem };
     }
 
-    if (db) {
+    if (db && (!depositData || depositData.status !== "approved") && Date.now() >= firestoreQuotaExceededUntil) {
       try {
         // 1. Direct get
-        let dSnap = await db.collection("deposits").doc(cleanOrderNo).get().catch(() => null);
+        let dSnap = await Promise.race([
+          db.collection("deposits").doc(cleanOrderNo).get(),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
+        ]).catch(() => null);
+
         if (dSnap && dSnap.exists) {
           depositData = { ...depositData, ...dSnap.data() };
         } else {
           // 2. Query by order_no field
-          let qSnap = await db.collection("deposits").where("order_no", "==", cleanOrderNo).limit(1).get().catch(() => null);
+          let qSnap = await Promise.race([
+            db.collection("deposits").where("order_no", "==", cleanOrderNo).limit(1).get(),
+            new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
+          ]).catch(() => null);
+
           if (qSnap && !qSnap.empty) {
             depositData = { ...depositData, ...qSnap.docs[0].data() };
+          } else if (transactionId) {
+            let tSnap = await Promise.race([
+              db.collection("deposits").where("transactionId", "==", transactionId).limit(1).get(),
+              new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
+            ]).catch(() => null);
+
+            if (tSnap && !tSnap.empty) {
+              depositData = { ...depositData, ...tSnap.docs[0].data() };
+            }
           }
         }
       } catch (dbErr) {
@@ -1495,8 +2123,25 @@ app.post("/api/verify-payment", async (req, res) => {
       });
     }
 
-    const isApproved = depositData.status === "approved" || depositData.status === "success" || depositData.credited === true;
-    const isPending = depositData.status === "pending" || depositData.status === "processing";
+    let isApproved = depositData.status === "approved" || depositData.status === "success" || depositData.credited === true;
+
+    // Automatic Verification Check: If pending, check if a verified SMS is waiting in the pool!
+    if (!isApproved) {
+      const candidateTrxId = String(depositData.transactionId || depositData.order_no || cleanOrderNo || "").toUpperCase().trim();
+      const matchedSms = findMatchingSmsInPool(candidateTrxId, depositData.amount);
+      if (matchedSms && !matchedSms.claimed) {
+        console.log(`[verify-payment] Found matching verified SMS in pool for TrxID: ${candidateTrxId}! Auto-approving immediately!`);
+        await approveAndCreditDeposit(cleanOrderNo, matchedSms.amount || depositData.amount, depositData.uid);
+        claimPoolSms(candidateTrxId, cleanOrderNo, depositData.uid);
+
+        const refreshedList = getLocalTransactions();
+        const refreshedItem = refreshedList.find((x: any) => (x.order_no === cleanOrderNo || x.id === cleanOrderNo));
+        if (refreshedItem) depositData = { ...depositData, ...refreshedItem };
+        isApproved = true;
+      }
+    }
+
+    const isPending = !isApproved && (depositData.status === "pending" || depositData.status === "processing");
     const currentStatus = isApproved ? "approved" : (isPending ? "pending" : "failed");
 
     res.json({
@@ -1537,43 +2182,53 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
     } catch (e) {}
 
     // 2. Strict 1-Time Usage / Duplicate Check across Database
-    if (db) {
+    if (db && Date.now() >= firestoreQuotaExceededUntil) {
       try {
-        const querySnap = await db.collection("deposits")
-          .where("transactionId", "==", cleanTxId)
-          .limit(10)
-          .get();
+        const querySnap = await Promise.race([
+          db.collection("deposits")
+            .where("transactionId", "==", cleanTxId)
+            .limit(10)
+            .get(),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
+        ]).catch(() => null);
 
-        for (const doc of querySnap.docs) {
-          if (doc.id !== order_no) {
-            const d = doc.data();
-            if (d.status === "approved" || d.status === "success" || d.credited === true) {
-              return res.status(400).json({
-                success: false,
-                error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে! একই আইডি বারবার ব্যবহার করা সম্ভব নয়।"
-              });
-            } else if (d.status === "pending") {
-              return res.status(400).json({
-                success: false,
-                error: "এই ট্রানজ্যাকশন আইডি দিয়ে ইতিমধ্যে একটি ডিপোজিট রিকোয়েস্ট অপেক্ষমান রয়েছে।"
-              });
+        if (querySnap && !querySnap.empty) {
+          for (const doc of querySnap.docs) {
+            if (doc.id !== order_no) {
+              const d = doc.data();
+              if (d.status === "approved" || d.status === "success" || d.credited === true) {
+                return res.status(400).json({
+                  success: false,
+                  error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে! একই আইডি বারবার ব্যবহার করা সম্ভব নয়।"
+                });
+              } else if (d.status === "pending") {
+                return res.status(400).json({
+                  success: false,
+                  error: "এই ট্রানজ্যাকশন আইডি দিয়ে ইতিমধ্যে একটি ডিপোজিট রিকোয়েস্ট অপেক্ষমান রয়েছে।"
+                });
+              }
             }
           }
         }
 
-        const queryOrderSnap = await db.collection("deposits")
-          .where("order_no", "==", cleanTxId)
-          .limit(10)
-          .get();
+        const queryOrderSnap = await Promise.race([
+          db.collection("deposits")
+            .where("order_no", "==", cleanTxId)
+            .limit(10)
+            .get(),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
+        ]).catch(() => null);
 
-        for (const doc of queryOrderSnap.docs) {
-          if (doc.id !== order_no) {
-            const d = doc.data();
-            if (d.status === "approved" || d.status === "success" || d.credited === true) {
-              return res.status(400).json({
-                success: false,
-                error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে!"
-              });
+        if (queryOrderSnap && !queryOrderSnap.empty) {
+          for (const doc of queryOrderSnap.docs) {
+            if (doc.id !== order_no) {
+              const d = doc.data();
+              if (d.status === "approved" || d.status === "success" || d.credited === true) {
+                return res.status(400).json({
+                  success: false,
+                  error: "এই ট্রানজ্যাকশন আইডিটি ইতিমধ্যে ব্যবহার করা হয়েছে এবং ব্যালেন্স যুক্ত হয়েছে!"
+                });
+              }
             }
           }
         }
@@ -1597,7 +2252,15 @@ app.post("/api/validate-manual-deposit", async (req, res) => {
       });
     }
 
-    return res.json({ success: true, message: "ট্রানজ্যাকশন আইডি বৈধ এবং গ্রহণ করা হয়েছে।" });
+    const matchedSms = findMatchingSmsInPool(cleanTxId);
+    return res.json({
+      success: true,
+      autoMatchReady: !!matchedSms,
+      smsAmount: matchedSms ? matchedSms.amount : null,
+      message: matchedSms
+        ? `এসএমএস পাওয়া গেছে (৳${matchedSms.amount})! সাবমিট করলেই তাৎক্ষণিক ব্যালেন্স যোগ হবে।`
+        : "ট্রানজ্যাকশন আইডি বৈধ এবং গ্রহণ করা হয়েছে।"
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -1939,38 +2602,110 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
     } catch (e) {}
 
     const results: any[] = [];
+    const processedOrders = new Set<string>();
+
+    // 1. Process Local Transactions
+    try {
+      const localList = getLocalTransactions();
+      for (const t of localList) {
+        if (t.uid === uid && t.type === "deposit") {
+          const orderKey = String(t.order_no || t.id || "");
+          // If pending, check if a matching SMS arrived in verified pool
+          if (t.status === "pending" || t.status === "processing") {
+            const candTrx = String(t.transactionId || t.order_no || "").trim().toUpperCase();
+            const matched = findMatchingSmsInPool(candTrx, t.amount);
+            if (matched && !matched.claimed) {
+              console.log(`[auto-check-user-deposits] Found matching SMS in pool for ${candTrx}! Auto-approving deposit #${orderKey}!`);
+              await approveAndCreditDeposit(orderKey, matched.amount || t.amount, uid);
+              claimPoolSms(candTrx, orderKey, uid);
+              t.status = "approved";
+              t.credited = true;
+              t.notified = false;
+            }
+          }
+
+          // If approved and unnotified
+          if ((t.status === "approved" || t.credited === true) && t.notified === false) {
+            if (orderKey && !processedOrders.has(orderKey)) {
+              processedOrders.add(orderKey);
+              t.notified = true;
+              saveLocalTransaction(t);
+              results.push({
+                order_no: orderKey,
+                result: {
+                  success: true,
+                  status: "approved",
+                  amount: Number(t.amount || 0),
+                  finalCredit: Number(t.finalCredit || t.amount || 0)
+                }
+              });
+            }
+          }
+        }
+      }
+    } catch (localErr) {
+      console.warn("[auto-check-user-deposits] Local check error:", localErr);
+    }
+
     let userDocData: any = null;
 
-    if (db) {
+    // 2. Process Firestore Deposits if connected
+    if (db && Date.now() >= firestoreQuotaExceededUntil) {
       try {
-        const uSnap = await db.collection("users").doc(uid).get();
-        if (uSnap.exists) userDocData = uSnap.data();
+        const uSnap = await Promise.race([
+          db.collection("users").doc(uid).get(),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
+        ]).catch(() => null);
+        if (uSnap && uSnap.exists) userDocData = uSnap.data();
       } catch (err: any) {}
 
       try {
-        const depSnap = await db.collection("deposits").where("uid", "==", uid).limit(5).get();
-        for (const doc of depSnap.docs) {
-          const parsed = doc.data();
-          const order_no = doc.id;
-          const isApproved = parsed.status === "approved" || parsed.status === "success";
-          const isUnnotified = parsed.notified === false || (parsed.notified !== true && parsed.notified !== "true");
-          if (isApproved && isUnnotified) {
-            const finalCredit = Number(parsed.finalCredit) || Number(parsed.creditedAmount) || Number(parsed.amount) || 0;
-            const amount = Number(parsed.amount) || finalCredit;
-            results.push({
-              order_no,
-              result: {
-                success: true,
-                status: "approved",
-                amount,
-                finalCredit
+        const depSnap = await Promise.race([
+          db.collection("deposits").where("uid", "==", uid).limit(10).get(),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 1500))
+        ]).catch(() => null);
+
+        if (depSnap && !depSnap.empty) {
+          for (const doc of depSnap.docs) {
+            const parsed = doc.data();
+            const order_no = doc.id;
+
+            // If pending in Firestore, check if matching SMS is in pool
+            if (parsed.status === "pending" || parsed.status === "processing") {
+              const candTrx = String(parsed.transactionId || parsed.order_no || doc.id).trim().toUpperCase();
+              const matched = findMatchingSmsInPool(candTrx, parsed.amount);
+              if (matched && !matched.claimed) {
+                console.log(`[auto-check-user-deposits] Firestore matching SMS in pool for ${candTrx}! Auto-approving deposit #${order_no}!`);
+                await approveAndCreditDeposit(order_no, matched.amount || parsed.amount, uid);
+                claimPoolSms(candTrx, order_no, uid);
+                parsed.status = "approved";
+                parsed.notified = false;
               }
-            });
-            await doc.ref.update({ notified: true });
+            }
+
+            const isApproved = parsed.status === "approved" || parsed.status === "success" || parsed.credited === true;
+            const isUnnotified = parsed.notified === false || (parsed.notified !== true && parsed.notified !== "true");
+
+            if (isApproved && isUnnotified && !processedOrders.has(order_no)) {
+              processedOrders.add(order_no);
+              const finalCredit = Number(parsed.finalCredit) || Number(parsed.creditedAmount) || Number(parsed.amount) || 0;
+              const amount = Number(parsed.amount) || finalCredit;
+              results.push({
+                order_no,
+                result: {
+                  success: true,
+                  status: "approved",
+                  amount,
+                  finalCredit
+                }
+              });
+              doc.ref.update({ notified: true }).catch(() => {});
+            }
           }
         }
       } catch (err: any) {}
     }
+
     return res.json({ success: true, results, user: userDocData });
   } catch (e: any) {
     return res.json({ success: true, results: [], user: null });
@@ -2189,9 +2924,16 @@ async function startServer() {
     } catch (e) {}
   }
 
-  app.use(express.static(distPath));
+  const staticOptions = {
+    setHeaders: (res: any) => {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+    }
+  };
+  app.use(express.static(distPath, staticOptions));
   if (fs.existsSync(distBackupPath)) {
-    app.use(express.static(distBackupPath));
+    app.use(express.static(distBackupPath, staticOptions));
   }
 
   // Fallback route for static assets
@@ -2229,7 +2971,7 @@ async function startServer() {
     const indexPath = fs.existsSync(path.join(distPath, 'index.html'))
       ? path.join(distPath, 'index.html')
       : path.join(distBackupPath, 'index.html');
-    res.sendFile(indexPath);
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"); res.setHeader("Pragma", "no-cache"); res.setHeader("Expires", "0"); res.sendFile(indexPath);
   });
 
   // Auto-cancel deposits older than 60 minutes (Runs every 5 minutes to optimize quota)
