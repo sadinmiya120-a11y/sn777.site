@@ -22,7 +22,9 @@ const patches = [
   "patch_firestore_offline.cjs",
   "patch_enable_manual_deposit.cjs",
   "patch_hide_propay.cjs",
-  "patch_hide_dep_channel_section.cjs"
+  "patch_hide_dep_channel_section.cjs",
+  "patch_payment_exact_css.cjs",
+  "patch_payment_page_screenshot.cjs"
 ];
 
 for (const patch of patches) {
