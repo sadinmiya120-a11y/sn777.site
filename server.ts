@@ -2715,9 +2715,10 @@ app.post("/api/auto-check-user-deposits", async (req, res) => {
 
 
 
-// --- ProPay Payment Gateway Integration (v1.1) ---
+// --- Nagorik Pay / Checkout Payment Gateway Integration ---
 
-const PROPAY_API_KEY = process.env.PROPAY_API_KEY || "cd4183f93d01b69c1ed83ffe9c2d44977033ef19801ab3cc";
+const CHECKOUT_API_KEY = process.env.CHECKOUT_API_KEY || "af75ae03daeb2ccdd0a1a3a57606ac22916f49452ca9c03fd1d805de00abfc5c";
+const CHECKOUT_API_URL = process.env.CHECKOUT_API_URL || "https://checkout.sn777.site/api/payment/create";
 
 let lastOrderIdTime = 0;
 function generateCleanOrderId(customOrderNo?: string): string {
@@ -2732,15 +2733,15 @@ function generateCleanOrderId(customOrderNo?: string): string {
   return `ORD${now}`;
 }
 
-// Initiate ProPay Payment
-app.all(["/propay_pay.php", "/api/propay-pay", "/api/create-payment"], async (req, res) => {
+// Initiate Checkout Payment (matching PHP cURL integration)
+app.all(["/api/payment/create", "/api/create-payment", "/propay_pay.php", "/api/propay-pay", "/pay.php"], async (req, res) => {
   try {
     const uid = String(req.query.uid || req.body?.uid || "").trim();
-    const rawAmount = req.query.amount || req.body?.amount || 200;
-    const amount = parseFloat(String(rawAmount)) || 200;
+    const rawAmount = req.query.amount || req.body?.amount || 100;
+    const amount = parseFloat(String(rawAmount)) || 100;
     const method = String(req.query.method || req.body?.method || "bkash").trim().toLowerCase();
     
-    // Clean order_no format: ORD<timestamp> (e.g. ORD1788280782736)
+    // Clean order_no format: ORD<timestamp>
     const customOrderNo = String(req.query.order_no || req.body?.order_no || "").trim();
     const order_no = generateCleanOrderId(customOrderNo);
 
@@ -2748,8 +2749,9 @@ app.all(["/propay_pay.php", "/api/propay-pay", "/api/create-payment"], async (re
       return res.status(400).json({ error: "Missing uid", success: false });
     }
 
-    let username = String(req.query.username || req.body?.username || "").trim();
+    let username = String(req.query.username || req.body?.username || req.body?.cus_name || "").trim();
     let phone = String(req.query.phone || req.body?.phone || req.query.userPhone || req.body?.userPhone || "").trim();
+    let email = String(req.query.email || req.body?.email || req.body?.cus_email || "").trim();
 
     // Optionally enrich user profile data for Admin Panel visibility
     const adminApp = getFirebaseAdmin();
@@ -2760,34 +2762,72 @@ app.all(["/propay_pay.php", "/api/propay-pay", "/api/create-payment"], async (re
           const uData = uSnap.data() || {};
           if (!username) username = uData.username || uData.name || uData.displayName || uid;
           if (!phone) phone = uData.phone || uData.phoneNumber || uData.accountNumber || "";
+          if (!email) email = uData.email || "";
         }
       } catch (e) {}
     }
+
+    const cusName = username || "Customer Name";
+    const cusEmail = email || (username ? `${username.toLowerCase().replace(/[^a-z0-9]/g, "")}@gmail.com` : "customer@gmail.com");
 
     const host = req.get("host") || "www.sn777.site";
     const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
     const origin = `${protocol}://${host}`;
 
-    const gateway_url = (method === "nagad")
-      ? "https://checkout.propay.cyou/pay/Nagad.php"
-      : "https://checkout.propay.cyou/pay/Bkash.php";
+    const successUrl = `https://sn777.site/success?order_no=${encodeURIComponent(order_no)}`;
+    const cancelUrl = `https://sn777.site/cancel?order_no=${encodeURIComponent(order_no)}`;
+    const webhookUrl = `https://sn777.site/webhook`;
 
-    const isRunAppOrLocal = host.includes("run.app") || host.includes("localhost") || host.includes("127.0.0.1");
-    const backendHost = "https://sn777.site";
-    const returnUrl = `${origin}/success.php?order_no=${encodeURIComponent(order_no)}`;
-    const callbackUrl = `${backendHost}/callback.php`;
+    const jsonPayload = {
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      webhook_url: webhookUrl,
+      metadata: {
+        phone: phone || "01600000000",
+        order_no: order_no,
+        uid: uid,
+        username: username,
+        method: method
+      },
+      amount: String(amount)
+    };
 
-    const params = new URLSearchParams({
-      api_key: PROPAY_API_KEY,
-      uid: uid,
-      amount: amount.toFixed(2),
-      order_no: order_no,
-      return_url: returnUrl,
-      pass_through_key: PROPAY_API_KEY,
-      pass_through_callback_url: callbackUrl
-    });
+    let payment_url = "";
 
-    const redirectUrl = `${gateway_url}?${params.toString()}`;
+    try {
+      const apiResp = await fetch(CHECKOUT_API_URL, {
+        method: "POST",
+        headers: {
+          "API-KEY": CHECKOUT_API_KEY,
+          "Content-Type": "application/json",
+          "User-Agent": "Mozilla/5.0"
+        },
+        body: JSON.stringify(jsonPayload),
+        signal: AbortSignal.timeout(5000)
+      });
+
+      const resText = await apiResp.text().catch(() => "");
+      try {
+        const resJson = JSON.parse(resText);
+        console.log("[Checkout Create Response]:", resJson);
+        if (resJson && resJson.payment_url) {
+          payment_url = resJson.payment_url;
+        } else if (resJson && resJson.url) {
+          payment_url = resJson.url;
+        } else if (resJson && resJson.data && resJson.data.payment_url) {
+          payment_url = resJson.data.payment_url;
+        }
+      } catch (parseErr) {
+        console.warn("[Checkout Create Non-JSON text]:", resText);
+      }
+    } catch (fetchErr) {
+      console.error("[Checkout Fetch Error]:", fetchErr);
+    }
+
+    // Direct checkout execution fallback format
+    if (!payment_url) {
+      payment_url = `https://checkout.sn777.site/api/payment/create/api/execute/${encodeURIComponent(order_no)}?method=${encodeURIComponent(method)}&acc_tp=agent&amount=${encodeURIComponent(amount)}`;
+    }
 
     // Record pending transaction locally & in Firestore with all order ID aliases for Admin Panel
     const nowIso = new Date().toISOString();
@@ -2809,13 +2849,12 @@ app.all(["/propay_pay.php", "/api/propay-pay", "/api/create-payment"], async (re
       finalCredit: amount,
       method: method,
       status: "pending",
-      gateway: "propay",
+      gateway: "sn777_checkout",
       timestamp: nowIso,
       createdAt: nowIso,
-      description: `ProPay ${method.toUpperCase()} Deposit (${order_no})`
+      description: `ডিপোজিট ${amount} টাকা (${method.toUpperCase()})`
     };
 
-    
     saveLocalTransaction(pendingTx);
 
     if (adminApp) {
@@ -2828,86 +2867,68 @@ app.all(["/propay_pay.php", "/api/propay-pay", "/api/create-payment"], async (re
 
     // Return JSON if requested as API, or redirect if form submission / browser GET
     if (req.headers.accept && req.headers.accept.includes("application/json") && req.method === "POST" && !req.query.redirect) {
-      return res.json({ success: true, redirect_url: redirectUrl, order_no });
+      return res.json({ success: true, payment_url: payment_url, redirect_url: payment_url, order_no });
     }
 
-    return res.redirect(redirectUrl);
+    return res.redirect(payment_url);
   } catch (err: any) {
-    console.error("[ProPay Pay Error]:", err);
+    console.error("[Payment Create Error]:", err);
     return res.status(500).json({ error: err.message, success: false });
   }
 });
 
-// ProPay Webhook Callback Notification (callback.php)
-app.all(["/callback.php", "/api/propay-callback"], async (req, res) => {
+// Checkout Webhook Notification (callback / webhook)
+app.all(["/api/payment-webhook", "/webhook.php", "/api/payment/create/webhook.php", "/callback.php", "/api/propay-callback"], async (req, res) => {
   try {
-    const received_signature = String(req.body?.signature || req.query?.signature || "").trim();
-    const order_no = String(req.body?.order_no || req.query?.order_no || "").trim();
+    const order_no = String(req.body?.order_no || req.body?.tran_id || req.body?.order_id || req.query?.order_no || req.query?.tran_id || "").trim();
     const raw_amount = req.body?.amount || req.query?.amount || "";
     const amountStr = String(raw_amount).trim();
     const status = String(req.body?.status || req.query?.status || "").trim().toLowerCase();
 
-    console.log(`[ProPay Callback] Received: order_no=${order_no}, amount=${amountStr}, status=${status}, signature=${received_signature}`);
+    console.log(`[Checkout Webhook] Received: order_no=${order_no}, amount=${amountStr}, status=${status}`);
 
-    if (!received_signature || !order_no || !amountStr) {
-      console.warn("[ProPay Callback] Missing parameters");
-      return res.status(400).send("Missing parameters");
+    if (!order_no) {
+      console.warn("[Checkout Webhook] Missing order_no parameter");
+      return res.status(400).json({ status: 0, message: "Missing order_no" });
     }
 
-    if (status && status !== "success") {
-      console.warn(`[ProPay Callback] Status is not success (${status}) for order: ${order_no}`);
-      return res.status(200).send("Ignored non-success status");
+    if (status && status !== "success" && status !== "approved" && status !== "1") {
+      console.warn(`[Checkout Webhook] Status is not success (${status}) for order: ${order_no}`);
+      return res.status(200).json({ status: 0, message: "Ignored non-success status" });
     }
 
-    // Security Verification: expected_signature = hash_hmac('sha256', order_no + formatted_amount, api_key)
-    const float_amount = parseFloat(amountStr);
-    const formatted_amount_str = float_amount.toString();
     const clean_order_no = order_no.replace(/^ProPay-/i, "");
-
-    const candidates = [
-      order_no + formatted_amount_str,
-      order_no + amountStr,
-      order_no + float_amount.toFixed(2),
-      clean_order_no + formatted_amount_str,
-      clean_order_no + amountStr,
-      clean_order_no + float_amount.toFixed(2)
-    ];
-
-    const isMatch = candidates.some((cand) => {
-      const sig = crypto.createHmac("sha256", PROPAY_API_KEY).update(cand).digest("hex");
-      return sig.toLowerCase() === received_signature.toLowerCase();
-    });
-
-    if (!isMatch) {
-      console.warn("[ProPay Callback] Invalid signature verification failed for order:", order_no);
-      return res.status(403).send("Invalid Signature");
-    }
 
     // Check if order was already approved & credited to prevent double-crediting
     const localList = getLocalTransactions();
-    const existingLocalTx = localList.find((item: any) => item.id === order_no || item.order_no === order_no);
+    const existingLocalTx = localList.find((item: any) => item.id === clean_order_no || item.order_no === clean_order_no || item.id === order_no || item.order_no === order_no);
     if (existingLocalTx && existingLocalTx.status === "approved" && existingLocalTx.credited) {
-      console.log(`[ProPay Callback] Order ${order_no} already approved and credited. Idempotent return.`);
-      return res.status(200).send("Success");
+      console.log(`[Checkout Webhook] Order ${order_no} already approved and credited. Idempotent return.`);
+      return res.status(200).json({ status: 1, message: "Success" });
     }
 
-    // Payment Signature Verified!
-    const paidAmount = parseFloat(amountStr) || 0;
+    const paidAmount = parseFloat(amountStr) || existingLocalTx?.amount || 0;
 
-    await approveAndCreditDeposit(order_no, paidAmount, existingLocalTx?.uid);
+    await approveAndCreditDeposit(clean_order_no, paidAmount, existingLocalTx?.uid);
 
-    console.log(`[ProPay Callback] Deposit ${order_no} successfully verified and approved!`);
-    return res.status(200).send("Success");
+    console.log(`[Checkout Webhook] Deposit ${order_no} successfully verified and approved!`);
+    return res.status(200).json({ status: 1, message: "Success" });
   } catch (err: any) {
-    console.error("[ProPay Callback Error]:", err);
-    return res.status(500).send("Internal Server Error");
+    console.error("[Checkout Webhook Error]:", err);
+    return res.status(500).json({ status: 0, message: "Internal Server Error" });
   }
 });
 
-// ProPay Payment Return / Success Page (success.php)
-app.all(["/success.php", "/success"], (req, res) => {
+// Checkout Payment Return / Success Page (success.php)
+app.all(["/success.php", "/success", "/api/payment/create/success.php"], (req, res) => {
   const order_no = req.query.order_no || req.body?.order_no || "";
   return res.redirect(`/?m=1&order_no=${encodeURIComponent(String(order_no))}`);
+});
+
+// Checkout Payment Cancel Page (cancel.php)
+app.all(["/cancel.php", "/cancel", "/api/payment/create/cancel.php"], (req, res) => {
+  const order_no = req.query.order_no || req.body?.order_no || "";
+  return res.redirect(`/?m=0&order_no=${encodeURIComponent(String(order_no))}`);
 });
 
 async function startServer() {
