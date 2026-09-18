@@ -9,6 +9,12 @@ const fs = require("fs");
   // Also replace any sendBeacon hardcoded URL
   code = code.replace(/https:\/\/sn777-site-864935185164\.us-west1\.run\.app\/api\/record-transaction/g, "https://sn777.site/api/record-transaction");
 
+  // Make L mutable so it can be reassigned
+  code = code.replace(
+    'const E=new URLSearchParams(window.location.search),L=E.get("order_no")||E.get("order_id")||E.get("ref"),ee=E.get("m");',
+    'const E=new URLSearchParams(window.location.search);let L=E.get("order_no")||E.get("order_id")||E.get("ref");const ee=E.get("m");'
+  );
+
   // Add pending order recovery fallback when returning to ?m=1 without order_no
   if (!code.includes('if(!L&&ee==="1")')) {
     code = code.replace(

@@ -26,11 +26,20 @@ for (const file of files) {
   let code = fs.readFileSync(file, "utf8");
 
   // 1. Fix v check
-  let vOldCheck = `if(!["binance","usdt","usdterc20"].includes(Be)&&(!Bn||!oi)){Fe("অনুগ্রহ করে প্রেরকের নম্বর এবং ট্রানজ্যাকশন আইডি প্রদান করুন।"),Je(!0);return}`;
-  let vNewCheck = `if(!["binance","usdt","usdterc20"].includes(Be)&&!oi){Fe("অনুগ্রহ করে ট্রানজ্যাকশন আইডি (TrxID) লিখুন।");Je(!0);return}if(!Bn){Bn=(ve&&(ve.phone||ve.username))||(gt.currentUser&&gt.currentUser.phoneNumber)||"01700000000"}`;
-  if (code.includes(vOldCheck)) {
-    code = code.replace(vOldCheck, vNewCheck);
+  let vOldCheck1 = `if(!["binance","usdt","usdterc20"].includes(Be)&&(!Bn||!oi)){Fe("অনুগ্রহ করে প্রেরকের নম্বর এবং ট্রানজ্যাকশন আইডি প্রদান করুন।"),Je(!0);return}`;
+  let vOldCheck2 = `if(!["binance","usdt","usdterc20"].includes(Be)&&!oi){Fe("অনুগ্রহ করে ট্রানজ্যাকশন আইডি (TrxID) লিখুন।");Je(!0);return}if(!Bn){Bn=(ve&&(ve.phone||ve.username))||(gt.currentUser&&gt.currentUser.phoneNumber)||"01700000000"}`;
+  let vFixedCheck = `if(!["binance","usdt","usdterc20"].includes(Be)&&!oi){Fe("অনুগ্রহ করে ট্রানজ্যাকশন আইডি (TrxID) লিখুন।");Je(!0);return}const _curSenderNum=(Bn&&Bn.trim())||(ve&&(ve.phone||ve.username))||(gt.currentUser&&gt.currentUser.phoneNumber)||"01700000000";try{Zs(_curSenderNum)}catch(_e){}`;
+  if (code.includes(vOldCheck2)) {
+    code = code.replace(vOldCheck2, vFixedCheck);
+  } else if (code.includes(vOldCheck1)) {
+    code = code.replace(vOldCheck1, vFixedCheck);
   }
+
+  // Also replace any remaining if(!Bn){Bn=...} pattern
+  code = code.replace(
+    /if\(!Bn\)\{Bn=\(ve&&\(ve\.phone\|\|ve\.username\)\)\|\|\(gt\.currentUser&&gt\.currentUser\.phoneNumber\)\|\|"01700000000"\}/g,
+    `const _curSenderNum=(Bn&&Bn.trim())||(ve&&(ve.phone||ve.username))||(gt.currentUser&&gt.currentUser.phoneNumber)||"01700000000";try{Zs(_curSenderNum)}catch(_e){}`
+  );
 
   // 2. Replace payment-screen (xs ? ... : ...)
   let key = `,"payment-screen")`;
