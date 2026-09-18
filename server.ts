@@ -789,7 +789,7 @@ app.get("/api/user-transactions", async (req, res) => {
                 status: data.status || "pending",
                 amount: Number(data.amount || 0),
                 displayAmount: Number(data.amount || 0),
-                method: data.method || (isWth ? (data.bankName || "bank") : "bkash"),
+                method: data.method || data.bankName || data.paymentMethod || (isWth ? "Nagad" : "Bkash"),
                 timestamp: data.timestamp || data.createdAt || new Date().toISOString(),
                 createdAt: data.createdAt || data.timestamp || new Date().toISOString(),
                 ...data
@@ -864,7 +864,169 @@ app.get("/api/user-transactions", async (req, res) => {
   }
 });
 
+// Persistent Bank Accounts Storage
+const BANK_ACCOUNTS_FILE = path.join(appDir, "data", "bank_accounts.json");
 
+function getLocalBankAccounts(): Record<string, any[]> {
+  try {
+    if (!fs.existsSync(path.join(appDir, "data"))) {
+      fs.mkdirSync(path.join(appDir, "data"), { recursive: true });
+    }
+    if (fs.existsSync(BANK_ACCOUNTS_FILE)) {
+      return JSON.parse(fs.readFileSync(BANK_ACCOUNTS_FILE, "utf8")) || {};
+    }
+  } catch (e) {
+    console.error("Error reading BANK_ACCOUNTS_FILE:", e);
+  }
+  return {};
+}
+
+function saveLocalBankAccounts(data: Record<string, any[]>) {
+  try {
+    if (!fs.existsSync(path.join(appDir, "data"))) {
+      fs.mkdirSync(path.join(appDir, "data"), { recursive: true });
+    }
+    fs.writeFileSync(BANK_ACCOUNTS_FILE, JSON.stringify(data, null, 2), "utf8");
+  } catch (e) {
+    console.error("Error saving BANK_ACCOUNTS_FILE:", e);
+  }
+}
+
+// GET /api/user-bank-accounts
+app.get("/api/user-bank-accounts", async (req, res) => {
+  try {
+    const uid = String(req.query.uid || req.query.userId || "").trim();
+    const username = String(req.query.username || "").trim();
+    const phone = String(req.query.phone || "").trim();
+
+    const localMap = getLocalBankAccounts();
+    let accounts: any[] = [];
+
+    // 1. Check local file store first (instant)
+    if (uid && localMap[uid]) accounts = localMap[uid];
+    else if (username && localMap[username]) accounts = localMap[username];
+    else if (phone && localMap[phone]) accounts = localMap[phone];
+
+    // 2. Check Firestore with 800ms circuit breaker timeout
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp && Date.now() >= firestoreQuotaExceededUntil) {
+        const db = adminApp.firestore();
+        let firestoreAccounts: any[] = [];
+
+        if (uid) {
+          const userDoc = await Promise.race([
+            db.collection("users").doc(uid).get(),
+            new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 800))
+          ]).catch(() => null);
+          if (userDoc && userDoc.exists && userDoc.data()?.bankAccounts) {
+            firestoreAccounts = userDoc.data()?.bankAccounts || [];
+          }
+        }
+        if (firestoreAccounts.length === 0 && username) {
+          const snap = await Promise.race([
+            db.collection("users").where("username", "==", username).limit(1).get(),
+            new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 800))
+          ]).catch(() => null);
+          if (snap && !snap.empty) {
+            firestoreAccounts = snap.docs[0].data()?.bankAccounts || [];
+          }
+        }
+        if (firestoreAccounts.length === 0 && (uid || username)) {
+          const bankDoc = await Promise.race([
+            db.collection("user_bank_accounts").doc(uid || username).get(),
+            new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 800))
+          ]).catch(() => null);
+          if (bankDoc && bankDoc.exists && bankDoc.data()?.accounts) {
+            firestoreAccounts = bankDoc.data()?.accounts || [];
+          }
+        }
+
+        if (Array.isArray(firestoreAccounts) && firestoreAccounts.length > 0) {
+          // Merge with local accounts
+          const map: Record<string, any> = {};
+          accounts.forEach((a: any) => { if (a && a.id) map[a.id] = a; });
+          firestoreAccounts.forEach((a: any) => { if (a && a.id) map[a.id] = a; });
+          accounts = Object.values(map);
+
+          // Update local file cache
+          if (uid) localMap[uid] = accounts;
+          if (username) localMap[username] = accounts;
+          if (phone) localMap[phone] = accounts;
+          saveLocalBankAccounts(localMap);
+        }
+      }
+    } catch (e: any) {
+      console.warn("Firestore bank account fetch error:", e?.message);
+    }
+
+    return res.json({ success: true, accounts });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/user-bank-accounts
+app.post("/api/user-bank-accounts", async (req, res) => {
+  try {
+    let body = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch (e) {}
+    }
+    const uid = String(body.uid || body.userId || "").trim();
+    const username = String(body.username || "").trim();
+    const phone = String(body.phone || "").trim();
+    const action = String(body.action || "save").toLowerCase();
+    const incomingAccounts = Array.isArray(body.accounts) ? body.accounts : [];
+    const newAccount = body.newAccount || body.account;
+    const deletedId = body.deletedId || body.accountId;
+
+    const localMap = getLocalBankAccounts();
+    const key = uid || username || phone || "default_user";
+    let currentAccounts: any[] = localMap[key] || [];
+
+    if (incomingAccounts.length > 0) {
+      currentAccounts = incomingAccounts;
+    } else if (action === "delete" && deletedId) {
+      currentAccounts = currentAccounts.filter((a: any) => a.id !== deletedId);
+    } else if (newAccount && newAccount.id) {
+      currentAccounts = [newAccount, ...currentAccounts.filter((a: any) => a.id !== newAccount.id && a.methodId !== newAccount.methodId)];
+    }
+
+    // Save to local file store immediately
+    if (uid) localMap[uid] = currentAccounts;
+    if (username) localMap[username] = currentAccounts;
+    if (phone) localMap[phone] = currentAccounts;
+    localMap[key] = currentAccounts;
+    saveLocalBankAccounts(localMap);
+
+    // Save to Firestore asynchronously in background without blocking response
+    try {
+      const adminApp = getFirebaseAdmin();
+      if (adminApp && Date.now() >= firestoreQuotaExceededUntil) {
+        const db = adminApp.firestore();
+        if (uid) {
+          db.collection("users").doc(uid).set({ bankAccounts: currentAccounts }, { merge: true }).catch(() => {});
+          db.collection("user_bank_accounts").doc(uid).set({ accounts: currentAccounts, username, updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+        }
+        if (username) {
+          db.collection("users").where("username", "==", username).limit(1).get().then(snap => {
+            if (snap && !snap.empty) {
+              snap.docs[0].ref.set({ bankAccounts: currentAccounts }, { merge: true }).catch(() => {});
+            }
+          }).catch(() => {});
+          db.collection("user_bank_accounts").doc(username).set({ accounts: currentAccounts, uid, updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+        }
+      }
+    } catch (e: any) {
+      console.warn("Firestore bank account save error:", e?.message);
+    }
+
+    return res.json({ success: true, accounts: currentAccounts });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // Update Auth & Firestore Profile Endpoint
 app.post("/api/update-auth", async (req, res) => {

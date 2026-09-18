@@ -17,7 +17,7 @@ files.forEach(file => {
   const oldSnippet = 'window.location.href=`https://sn777.site/gopay_pay.php?uid=${gt.currentUser.uid}&amount=${E}&method=${Be}&order_no=${Te}`,fi("")';
   
   if (code.includes(oldSnippet)) {
-    const newSnippet = 'window.location.assign("' + BACKEND_URL + '/gopay_pay.php?uid=" + encodeURIComponent(gt.currentUser.uid) + "&amount=" + encodeURIComponent(E) + "&method=" + encodeURIComponent(Be) + "&order_no=" + encodeURIComponent(Te)),fi("")';
+    const newSnippet = 'window.location.assign("' + BACKEND_URL + '/gopay_pay.php?uid=" + encodeURIComponent(gt.currentUser ? gt.currentUser.uid : "") + "&amount=" + encodeURIComponent(E) + "&method=" + encodeURIComponent(Be) + "&order_no=" + encodeURIComponent(Te)),fi("")';
     code = code.replace(oldSnippet, newSnippet);
   }
 

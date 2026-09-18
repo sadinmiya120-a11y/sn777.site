@@ -58,7 +58,7 @@ for (const file of files) {
 
   // 5. In History button click: Clean up local cache so expired deposits immediately show cancelled
   const oldHistoryOpen = 'const _c=JSON.parse(localStorage.getItem("sn777_tx_list_"+gt.currentUser.uid)||"[]");if(_c&&_c.length>0)gs(_c)';
-  const newHistoryOpen = 'const _c=JSON.parse(localStorage.getItem("sn777_tx_list_"+gt.currentUser.uid)||"[]");if(_c&&_c.length>0){const _nw=Date.now();let _mod=false;_c.forEach(_t=>{if(_t.type==="deposit"&&(_t.status==="pending"||!_t.status)&&(_nw-new Date(_t.timestamp||_t.createdAt||0).getTime()>60*60*1000)){_t.status="cancelled";_t.cancelled=true;_mod=true;}});if(_mod){try{localStorage.setItem("sn777_tx_list_"+gt.currentUser.uid,JSON.stringify(_c))}catch(e){}}gs(_c)}';
+  const newHistoryOpen = 'const _cKey=(gt.currentUser?gt.currentUser.uid:"");const _c=JSON.parse((_cKey?localStorage.getItem("sn777_tx_list_"+_cKey):null)||"[]");if(_c&&_c.length>0){const _nw=Date.now();let _mod=false;_c.forEach(_t=>{if(_t.type==="deposit"&&(_t.status==="pending"||!_t.status)&&(_nw-new Date(_t.timestamp||_t.createdAt||0).getTime()>60*60*1000)){_t.status="cancelled";_t.cancelled=true;_mod=true;}});if(_mod&&_cKey){try{localStorage.setItem("sn777_tx_list_"+_cKey,JSON.stringify(_c))}catch(e){}}gs(_c)}';
 
   if (code.includes(oldHistoryOpen)) {
     code = code.replaceAll(oldHistoryOpen, newHistoryOpen);
