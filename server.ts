@@ -825,38 +825,11 @@ app.get("/api/user-transactions", async (req, res) => {
       }
     }
 
-    // Auto-cancel deposits older than 60 minutes so they never remain pending in history
-    const autoCancelCutoff = Date.now() - 60 * 60 * 1000;
-    let localModified = false;
-    const localListAll = getLocalTransactions();
-
-    const merged = Array.from(map.values()).map(tx => {
-      const isDeposit = tx.type === "deposit" || !!tx.depositNo || String(tx.id).startsWith("ORD") || String(tx.id).startsWith("dep");
-      const isApproved = tx.status === "approved" || tx.status === "success" || tx.credited === true;
-      const txTime = new Date(tx.timestamp || tx.createdAt || 0).getTime();
-      if (isDeposit && !isApproved && tx.status === "pending" && txTime > 0 && txTime < autoCancelCutoff) {
-        tx.status = "cancelled";
-        tx.cancelled = true;
-        const matchedLocal = localListAll.find((l: any) => (l.id === tx.id || l.order_no === tx.id));
-        if (matchedLocal && matchedLocal.status !== "approved" && matchedLocal.status !== "success" && matchedLocal.credited !== true) {
-          matchedLocal.status = "cancelled";
-          matchedLocal.cancelled = true;
-          matchedLocal.updatedAt = new Date().toISOString();
-          localModified = true;
-        }
-      }
-      return tx;
-    }).sort((a, b) => {
+    const merged = Array.from(map.values()).sort((a, b) => {
       const timeA = new Date(a.timestamp || a.createdAt || 0).getTime();
       const timeB = new Date(b.timestamp || b.createdAt || 0).getTime();
       return timeB - timeA;
     });
-
-    if (localModified) {
-      try {
-        fs.writeFileSync(TX_STORE_FILE, JSON.stringify(localListAll, null, 2), "utf8");
-      } catch (e) {}
-    }
 
     return res.json({ transactions: merged });
   } catch (err: any) {
@@ -3134,84 +3107,6 @@ async function startServer() {
       ? path.join(distPath, 'index.html')
       : path.join(distBackupPath, 'index.html');
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"); res.setHeader("Pragma", "no-cache"); res.setHeader("Expires", "0"); res.sendFile(indexPath);
-  });
-
-  // Auto-cancel deposits older than 60 minutes (Runs every 5 minutes to optimize quota)
-  cron.schedule('*/5 * * * *', async () => {
-    console.log('[Cron] Running auto-cancel check for pending deposits older than 60 minutes');
-    const sixtyMinutesAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-
-    // 1. Process local storage transactions auto-cancel
-    try {
-      const localList = getLocalTransactions();
-      let modified = false;
-      const cutoff = Date.now() - 60 * 60 * 1000;
-      for (const tx of localList) {
-        if (tx.type === "deposit" && (tx.status === "pending" || !tx.status)) {
-          const tIso = tx.timestamp || tx.createdAt || "";
-          const tMillis = new Date(tIso).getTime();
-          if (tMillis > 0 && tMillis < cutoff) {
-            tx.status = "cancelled";
-            tx.cancelled = true;
-            tx.updatedAt = new Date().toISOString();
-            modified = true;
-          }
-        }
-      }
-      if (modified) {
-        fs.writeFileSync(TX_STORE_FILE, JSON.stringify(localList, null, 2), "utf8");
-      }
-    } catch (localErr) {}
-
-    // 2. Try Firestore auto-cancel with graceful handling for Quota Exceeded / Code 8
-    const adminApp = getFirebaseAdmin();
-    if (!adminApp) return;
-    
-    try {
-        const db = adminApp.firestore();
-        const pendingDeposits = await db.collection('deposits')
-            .where('status', '==', 'pending')
-            .get();
-        
-        const cutoff = Date.now() - 60 * 60 * 1000;
-        for (const doc of pendingDeposits.docs) {
-            const data = doc.data();
-            let createdMillis = 0;
-            if (data.timestamp && typeof data.timestamp.toDate === 'function') {
-                createdMillis = data.timestamp.toDate().getTime();
-            } else if (data.timestamp) {
-                createdMillis = new Date(data.timestamp).getTime();
-            } else if (data.createdAt) {
-                createdMillis = new Date(data.createdAt).getTime();
-            }
-            
-            if (createdMillis > 0 && createdMillis < cutoff) {
-                const depositId = doc.id;
-                const uid = data.uid;
-
-                // 1. Update deposits document
-                await doc.ref.update({ status: 'cancelled', cancelled: true, updatedAt: new Date().toISOString() }).catch(() => {});
-
-                // 2. Update transactions document
-                try {
-                    await db.collection('transactions').doc(depositId).update({ status: 'cancelled', cancelled: true, updatedAt: new Date().toISOString() }).catch(() => {});
-                } catch (txErr: any) {}
-
-                // 3. Update users/{uid}/history/{depositId} document if uid exists
-                if (uid) {
-                    try {
-                        await db.collection('users').doc(uid).collection('history').doc(depositId).update({ status: 'cancelled', cancelled: true, updatedAt: new Date().toISOString() }).catch(() => {});
-                    } catch (histErr: any) {}
-                }
-            }
-        }
-    } catch (error: any) {
-        if (error?.code === 8 || error?.message?.includes("RESOURCE_EXHAUSTED") || error?.message?.includes("Quota exceeded")) {
-            console.warn('[Cron] Firestore quota exceeded during auto-cancel check, local transactions auto-cancelled gracefully.');
-        } else {
-            console.error('[Cron] Error running auto-cancel check:', error?.message || error);
-        }
-    }
   });
 
   app.listen(PORT, "0.0.0.0", () => {
